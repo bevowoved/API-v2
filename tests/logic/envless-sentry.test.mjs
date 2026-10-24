@@ -1,0 +1,23 @@
+import { test, before } from "node:test";
+import assert from "node:assert/strict";
+import { execFile } from "node:child_process";
+import path from "node:path";
+import common from "../helpers/common.cjs";
+
+const CHILD = path.join(common.ROOT, "tests", "logic", "helpers", "envless-child.cjs");
+
+const run = (plan) =>
+    new Promise((resolve, reject) => execFile(process.execPath, [CHILD, JSON.stringify(plan)],
+        { cwd: common.ROOT, env: { PATH: process.env.PATH }, timeout: 30_000 },
+        (error, stdout, stderr) => (error ? reject(new Error(`${error.message}\n${stderr}`)) : resolve(JSON.parse(stdout)))));
+
+let observed;
+before(async () => { observed = await run({ sentry: { set: { SENTRY_ENVIRONMENT: "staging", SENTRY_RELEASE: "t23-sha" }, unset: {} } }); });
+
+test("sentry: SENTRY_ENVIRONMENT and SENTRY_RELEASE still reach the event through the SDK's own env reading", () => {
+    assert.deepEqual(observed.set, { environment: "staging", release: "t23-sha" });
+});
+
+test("sentry: unset, the environment is still 'production' and no release is invented", () => {
+    assert.deepEqual(observed.unset, { environment: "production", release: null });
+});

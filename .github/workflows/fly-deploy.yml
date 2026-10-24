@@ -1,18 +1,98 @@
-# See https://fly.io/docs/app-guides/continuous-deployment-with-github-actions/
-
 name: Fly Deploy
 on:
   push:
     branches:
       - main
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
 jobs:
+  typecheck:
+    name: Typecheck and test (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # The 22.13 engines floor and the newest major; 26 (.nvmrc) runs in the image job, with coverage and the image gate.
+        node: ["22.13", "25"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm test
+  image:
+    name: Build the image once, then test (Node 26, coverage) and gate it
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # Layer cache in the GitHub Actions cache (free up to 10 GB per repo). Only main writes it, so PRs can read but never poison it.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          target: debug
+          outputs: type=local,dest=artifacts
+          cache-from: type=gha,scope=image
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: mauria-api:budget
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=image
+          cache-to: ${{ github.event_name != 'pull_request' && github.ref == 'refs/heads/main' && 'type=gha,scope=image,mode=max,ignore-error=true' || '' }}
+      - run: IMAGE=mauria-api:budget node scripts/lock.mjs build coverage
+      - run: docker run -d -p 8080:8080 mauria-api:budget && curl -fsS --retry 20 --retry-connrefused --retry-delay 1 http://127.0.0.1:8080/healthz
+      - run: sha256sum artifacts/debug/*
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-debug-${{ github.sha }}
+          path: artifacts/debug/
+      # Publish the image that just passed the gate, so deploy never rebuilds. The push re-exports the same cached
+      # layers with zstd; the check below proves it by comparing uncompressed layer digests with the tested image.
+      - if: github.repository == 'MauriaApp/API-v2' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: echo "$FLY_API_TOKEN" | docker login registry.fly.io -u x --password-stdin
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - if: github.repository == 'MauriaApp/API-v2' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          provenance: false
+          sbom: false
+          outputs: type=image,name=registry.fly.io/mauria-api:${{ github.sha }},push=true,compression=zstd,compression-level=3,force-compression=true,oci-mediatypes=true
+          cache-from: type=gha,scope=image
+      - if: github.repository == 'MauriaApp/API-v2' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          tested=$(docker image inspect mauria-api:budget --format '{{json .RootFS.Layers}}' | jq -c .)
+          pushed=$(docker buildx imagetools inspect registry.fly.io/mauria-api:${{ github.sha }} --format '{{json .Image.RootFS.DiffIDs}}' | jq -c .)
+          echo "tested: $tested"; echo "pushed: $pushed"
+          [ "$tested" = "$pushed" ]
   deploy:
     name: Deploy app
+    needs: [typecheck, image]
+    if: github.repository == 'MauriaApp/API-v2' && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
-    concurrency: deploy-group    # optional: ensure only one action runs at a time
+    timeout-minutes: 15
+    concurrency: deploy-group
     steps:
-      - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: flyctl deploy --remote-only
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: superfly/flyctl-actions/setup-flyctl@ed8efb33836e8b2096c7fd3ba1c8afe303ebbff1 # master 2026-04-08, node24
+      - run: flyctl secrets set SENTRY_RELEASE=${{ github.sha }} --stage
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      - run: flyctl deploy --image registry.fly.io/mauria-api:${{ github.sha }}
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

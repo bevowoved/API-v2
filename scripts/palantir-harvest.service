@@ -1,9 +1,13 @@
 # Palantir harvester: builds the weekly planning index and publishes it to
-# mauria-api. Installed on the harvester machine (see scripts/palantir-daemon.ts).
+# mauria-api. Installed on the harvester machine (src/palantir-daemon.ts, run from dist/).
 #
+# User, WorkingDirectory, EnvironmentFile and the WireGuard interface are placeholders:
+# set them to the harvester machine's values in the installed copy.
+#
+# After each git pull, run `npm run build` (tsc needs the devDependencies), then:
 #   sudo cp scripts/palantir-harvest.service /etc/systemd/system/
 #   sudo cp scripts/palantir-harvest.timer  /etc/systemd/system/
-#   sudo systemctl daemon-reload
+#   sudo systemctl daemon-reload            # otherwise systemd keeps the old unit
 #   sudo systemctl enable --now palantir-harvest.timer
 
 [Unit]
@@ -13,14 +17,14 @@ After=network-online.target
 
 [Service]
 Type=oneshot
-User=louis
-WorkingDirectory=/home/louis/Programming/palantir
-EnvironmentFile=/home/louis/.config/palantir/harvest.env
+User=palantir
+WorkingDirectory=/opt/palantir
+EnvironmentFile=/etc/palantir/harvest.env
 # The harvest must never run on the machine's own IP: a Junia ban would hit
 # it instead of the API, but the "+" runs these as root regardless of User=,
 # and a failed ExecStartPre aborts the whole service before any Aurion call.
-ExecStartPre=+/usr/bin/wg-quick up protonvpn-wg
-ExecStart=/home/louis/.nvm/versions/node/v22.19.0/bin/node node_modules/ts-node/dist/bin.js -T scripts/palantir-daemon.ts
-ExecStopPost=+/usr/bin/wg-quick down protonvpn-wg
-# Harvest (~15 min) plus publish retries (up to 3 h by default).
+ExecStartPre=+/usr/bin/wg-quick up wg-harvest
+ExecStart=/usr/bin/env node dist/palantir-daemon.js
+ExecStopPost=+/usr/bin/wg-quick down wg-harvest
+# Harvest plus publish retries (up to 3 h by default).
 TimeoutStartSec=4h

@@ -1,0 +1,6 @@
+const Module = require("node:module");
+const resolve = Module._resolveFilename;
+Module._resolveFilename = function (request, ...rest) {
+    if (request.startsWith("@fastify/swagger-ui")) throw Object.assign(new Error("hidden"), { code: "MODULE_NOT_FOUND" });
+    return resolve.call(this, request, ...rest);
+};

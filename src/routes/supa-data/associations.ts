@@ -1,80 +1,11 @@
-import { FastifyInstance } from "fastify";
-import { getSupabase, pfpUrl } from "./utils/supabase";
-
-export async function associationsRoute(fastify: FastifyInstance) {
-    fastify.get(
-        "/associations",
-        {
-            schema: {
-                response: {
-                    200: {
-                        type: "array",
-                        items: {
-                            type: "object",
-                            properties: {
-                                name: { type: "string" },
-                                description: { type: "string" },
-                                contact: { type: "string" },
-                                image: { type: "string" },
-                            },
-                            required: ["name", "description", "contact"],
-                        },
-                    },
-                    500: {
-                        type: "object",
-                        properties: {
-                            success: { type: "boolean" },
-                            error: { type: "string" },
-                        },
-                        required: ["success", "error"],
-                    },
-                },
-            },
-        },
-        async (request, reply) => {
-            try {
-                const assos = await getAssos();
-                return assos;
-            } catch (error) {
-                return reply.status(500).send({
-                    success: false,
-                    error:
-                        error instanceof Error
-                            ? error.message
-                            : "Unknown error",
-                });
-            }
-        }
-    );
-}
-
-const getAssos = async () => {
-    try {
-        const { data, error } = await getSupabase().from("associations").select("*");
-        if (error) throw error;
-
-        data.forEach((item) => {
-            if (
-                !item.image &&
-                item.lienContact &&
-                item.lienContact.includes("instagram.com/")
-            ) {
-                item.nomInsta = item.lienContact.split("instagram.com/")[1];
-                item.image = pfpUrl + item.nomInsta + ".jpg";
-            }
-        });
-
-        const assos = data.map((asso) => ({
-            name: asso.titre,
-            description: asso.description,
-            contact: asso.lienContact,
-            image: asso.image,
-        }));
-
-        assos.sort((a, b) => a.name.localeCompare(b.name));
-
-        return assos;
-    } catch (error) {
-        throw new Error("Failed to fetch associations: " + error);
-    }
-};
+import { cachedRows, pfpUrl, rows, supaGetRoute, uniq } from "./utils/supabase";
+type Asso = { titre?: string | null; description?: string | null; image?: string | null; lienContact?: string | null };
+export const associationsRoute = supaGetRoute({ url: "/associations", cacheKey: "associations", ok: rows({ name: "string", description: "string", contact: "string", image: "string" }, ["name", "description", "contact"]), fetch: () => getAssos() });
+export const getAssos = () =>
+  cachedRows("associations", "associations", (list: Asso[]) =>
+    uniq(
+      list.map((asso) => { const handle = asso.lienContact?.split("instagram.com/")[1]?.replace(/\/+$/, ""); return { name: asso.titre ?? "", description: asso.description ?? "", contact: asso.lienContact ?? "", image: asso.image || (handle ? `${pfpUrl}${handle}.jpg` : undefined) }; }),
+      (a) => `${a.name}\0${a.description}\0${a.contact}\0${a.image ?? ""}`,
+    ).toSorted((a, b) => a.name.localeCompare(b.name)),
+    { select: "titre,description,image,lienContact", dayAnchor: true },
+  );

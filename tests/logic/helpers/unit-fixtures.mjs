@@ -1,0 +1,30 @@
+import common from "../../helpers/common.cjs";
+
+const { PrintClient } = common.load("routes/print/utils/print.js");
+
+export const choiceRow = (code, label, type, rowKey = "rk1") =>
+    `<tr data-rk="${rowKey}"><td>case</td><td>${code}</td><td>${label}</td><td>30/06/2027</td><td>${type}</td></tr>`;
+
+export const menuItem = (id, label, icon = "") =>
+    `'form:sidebar_menuid':'${id}'"><span class="ui-menuitem-icon ${icon}"></span><span class="ui-menuitem-text">${label}</span></a>`;
+
+export const sidebarSubmenu = (id, label) =>
+    `<li class="ui-menu-parent ${id} null"><a href="#"><span class="ui-menuitem-icon"></span>` +
+    `<span class="ui-menuitem-text">${label}</span></a>`;
+
+export const jobBlock = (id, title, overview) =>
+    `<div class="job"><div data-job-id="${id}"></div><div class="job-title">${title}</div>` +
+    `<div class="job-basic-overview">${overview}</div></div>`;
+
+export const printClient = (htmlByPath) => {
+    const session = {
+        client: {
+            get: async (url) => {
+                for (const [fragment, entry] of Object.entries(htmlByPath))
+                    if (url.includes(fragment)) return typeof entry === "function" ? entry(url) : { statusCode: 200, body: entry };
+                return { statusCode: 404, body: "" };
+            },
+        },
+    };
+    return new PrintClient(session);
+};

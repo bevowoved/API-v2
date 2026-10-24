@@ -1,0 +1,65 @@
+import { test, before, after, beforeEach } from "node:test";
+import assert from "node:assert/strict";
+import { startDocsSite, mixedSite, GRID } from "./helpers/aurion-docs-site.mjs";
+import { LOGIN_PAGE, EMPTY_LEAF, datagridLeaf, unfoldPage, cannedDocumentsSession } from "./helpers/aurion-fixtures.mjs";
+
+let site;
+before(async () => { site = await startDocsSite(); });
+after(async () => { await site.close(); });
+beforeEach(() => site.sm.revokeSessions());
+
+const LEAF = datagridLeaf("diplome.pdf");
+const CATEGORY = unfoldPage([["999", "Mes documents"]]);
+const documents = (session) => new site.docs.AurionDocuments(session);
+const oneLeaf = (html) => cannedDocumentsSession({ unfoldBody: CATEGORY, leaves: [{ menuid: "999", html }] });
+
+test("a submenu unfold that renders the login page fails as a lost upstream session at discovery", async () => {
+    const session = cannedDocumentsSession({ unfoldBody: LOGIN_PAGE, leaves: [{ menuid: "999", html: LEAF }] });
+    await assert.rejects(() => documents(session).getAllDocuments("e@x.fr", "p"), {
+        message: "Session amont perdue (page de reconnexion rendue)",
+        lostSession: true,
+    });
+});
+
+test("a healthy leaf with no documents yields an empty result, not an error", async () => {
+    assert.deepEqual(await documents(oneLeaf(EMPTY_LEAF)).getAllDocuments("e@x.fr", "p"), { categories: [], documents: [] });
+});
+
+test("a healthy leaf with one datagrid row parses its label, type, size and comment", async () => {
+    assert.deepEqual(await documents(oneLeaf(LEAF)).getAllDocuments("e@x.fr", "p"), {
+        categories: [{ menuid: "999", label: "Mes documents" }],
+        documents: [{
+            label: "diplome.pdf", type: "", size: "", comment: "",
+            category: "999", docIndex: 0, downloadType: "datagrid", submitParam: "form:j_idt90:0:j_idt100",
+        }],
+    });
+});
+
+test("openLeafPage replays a settled open with one GET of its redirect target and no second open POST", async () => {
+    site.configure({ ...mixedSite() });
+    const session = new site.sm.SessionManager();
+    try {
+        const out = await session.openLeafPage("VS", "II", GRID, `${site.sm.AURION_BASE}/faces/ChoixGmcc.xhtml`, `${site.sm.AURION_BASE}/`, 0, Promise.resolve({ page: "", redirect: "/faces/DocGrid.xhtml" }));
+        assert.equal(out.viewState, `VS-P1-${GRID}`);
+        assert.match(out.page, /Relevé S1\.pdf/);
+        assert.deepEqual(site.trace(), [`get:${GRID}`]);
+    } finally {
+        session.dispose();
+    }
+});
+
+test("openLeafPage propagates a refused open without any GET", async () => {
+    site.configure({ ...mixedSite() });
+    const session = new site.sm.SessionManager();
+    const refused = Promise.reject(new Error("Erreur partielle sur form"));
+    refused.catch(() => {});
+    try {
+        await assert.rejects(
+            () => session.openLeafPage("VS", "II", GRID, `${site.sm.AURION_BASE}/faces/ChoixGmcc.xhtml`, `${site.sm.AURION_BASE}/`, 0, refused),
+            { message: "Erreur partielle sur form" },
+        );
+        assert.deepEqual(site.trace(), []);
+    } finally {
+        session.dispose();
+    }
+});

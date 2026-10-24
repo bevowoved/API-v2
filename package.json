@@ -2,33 +2,44 @@
   "name": "mauriaapifastify",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "dist/index.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js"
+    "dev": "bun --watch --env-file-if-exists=.env.dev run src/index.ts",
+    "build": "node scripts/lock.mjs build",
+    "test": "node scripts/lock.mjs build test",
+    "start": "node --max-old-space-size=176 --max-semi-space-size=2 --v8-pool-size=1 --env-file-if-exists=.env dist/index.js",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": { "node": ">=22.13.0" },
   "dependencies": {
-    "@fastify/cors": "^11.1.0",
-    "@fastify/multipart": "^10.1.1",
-    "@fastify/swagger": "^9.5.1",
-    "@fastify/swagger-ui": "^5.2.3",
-    "@sentry/node": "^10.16.0",
-    "@supabase/supabase-js": "^2.57.4",
-    "dotenv": "^17.2.2",
-    "fastify": "^5.6.0",
-    "got": "^14.4.8",
-    "tough-cookie": "^6.0.0",
-    "unpdf": "1.7.0"
+    "@fastify/ajv-compiler": "^4.0.7",
+    "@fastify/cors": "^11.3.1",
+    "@fastify/fast-json-stringify-compiler": "^5.1.1",
+    "@fastify/multipart": "^10.1.4",
+    "@fastify/swagger": "^9.9.1",
+    "@fastify/swagger-ui": "6.1.2",
+    "@firecrawl/pdf-inspector": "^1.25.2",
+    "@sentry/bundler-plugins": "file:scripts/stubs/sentry-bundler-plugins",
+    "@sentry/node": "^11.8.0",
+    "@supabase/postgrest-js": "^2.118.0",
+    "entities": "^8.1.0",
+    "fastify": "^5.12.7",
+    "tough-cookie": "^6.0.0"
   },
   "devDependencies": {
-    "@types/node": "^24.3.3",
-    "ts-node": "^10.9.2",
-    "ts-node-dev": "^2.0.0",
-    "typescript": "^5.9.2"
+    "@types/node": "^26.6.5",
+    "esbuild": "0.28.2",
+    "typescript": "^7.0.2"
+  },
+  "overrides": {
+    "@sentry/bundler-plugins": "$@sentry/bundler-plugins"
+  },
+  "prettier": {
+    "printWidth": 228,
+    "endOfLine": "auto"
   }
 }

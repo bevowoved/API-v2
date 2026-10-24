@@ -1,0 +1,382 @@
+{
+  "policy": "Tests 'pinned'/« figé » de la lane D : ils PASSENT en encodant un état non corrigé. Jamais désactivés. Le jour où l'état change, re-baseliner l'assertion dans le même commit que le correctif et déplacer l'entrée ici vers 'closed'. Aucun skip/todo/expected toléré.",
+  "lane": "tests/logic, tests/security",
+  "pinned": [
+    {
+      "file": "tests/logic/cache-layer.test.mjs",
+      "test": "MAX_ENTRY_AGE_MS is not a read bound: an entry with a 48 h TTL is still a HIT at 25 h old",
+      "reason": "le garde d'âge n'est consulté qu'au sweep d'éviction, jamais en lecture",
+      "action": "si le garde devient une borne de lecture, re-baseliner (le HIT à 25 h devient un MISS)"
+    },
+    {
+      "file": "tests/logic/menu-pdf-parser.test.mjs",
+      "test": "an unknown layout keeps the restaurant with empty sections",
+      "reason": "une mise en page inconnue et un menu vide sont indistinguables",
+      "action": "distinguer les deux, puis re-baseliner"
+    },
+    {
+      "file": "tests/logic/menu-pdf-parser.test.mjs",
+      "test": "a repeated section label yields two sections with the same title instead of merging them",
+      "reason": "les sections homonymes ne sont pas fusionnées",
+      "action": "fusionner, puis re-baseliner"
+    },
+    {
+      "file": "tests/logic/menu-pdf-parser.test.mjs",
+      "test": "a line 38 high or taller is dropped as a page header, taking a tall menu line with it",
+      "reason": "le seuil h ≥ 38 écarte aussi une ligne de menu réelle",
+      "action": "affiner le seuil, puis re-baseliner"
+    },
+    {
+      "file": "tests/logic/route-contracts.test.mjs",
+      "test": "validation 400 body: English, but DOES NOT MATCH the declared { success, error } schema",
+      "reason": "le corps d'erreur du framework n'a pas la forme { success, error } ; le schéma 400 déclare désormais statusCode/code/message (renommé : les messages rendus sont passés de français à anglais)",
+      "action": "si le schéma 400 redevient strict, re-baseliner"
+    },
+    {
+      "file": "tests/logic/page-parser.test.mjs",
+      "test": "parseGrades accepts the same truncated table when another paginator key sits between rows and rowCount",
+      "reason": "the truncation guard reads the paginator with a strict rows-then-rowCount regex (page-parser.ts assertComplete) and falls back to 0, so a truncated grades or absences page is consumed as complete",
+      "action": "make assertComplete read the paginator like parseDataTableWidget, then re-baseline: the page must be refused as truncated"
+    },
+    {
+      "file": "tests/logic/page-parser.test.mjs",
+      "test": "parseChoiceRows accepts a blank group code: the shape check allows an empty column",
+      "reason": "CODE_SHAPE and TYPE_SHAPE match the empty string, so a shifted or blank column is accepted and a group can be indexed under an empty code",
+      "action": "require a non-empty code, then re-baseline: the row must be refused"
+    },
+    {
+      "file": "tests/logic/print-client.test.mjs",
+      "test": "listJobs answers an empty array when the page carries no job marker at all",
+      "reason": "a login wall or a layout change is indistinguishable from an empty print queue",
+      "action": "require a job-list sentinel, then re-baseline: a page without it must raise a named error"
+    },
+    {
+      "file": "tests/logic/menu-pdf-parser.test.mjs",
+      "test": "a dated page without any restaurant header answers a menu with the date and no restaurant",
+      "reason": "parseMenuPdf only refuses when both the date and the restaurants are missing; a menu with an empty date is never considered fresh, so every read downloads and parses the PDF again",
+      "action": "refuse a menu without restaurants or without a date, then re-baseline"
+    },
+    {
+      "file": "tests/logic/admin-routes-print-census.test.mjs",
+      "test": "people: a hyphenated roster class can never match a label token, so collesGroup stays null",
+      "reason": "colles.ts compares the raw lowercase roster class against single alphanumeric tokens of the Aurion label, so a class such as MPI-K1 never matches and collesGroup is silently null",
+      "action": "normalise the roster class with the same tokenizer as the label, then re-baseline: the group must resolve"
+    },
+    {
+      "file": "tests/logic/admin-routes-print-census.test.mjs",
+      "test": "people: the colles roster is re-read from Supabase on every search, unlike /colles/group",
+      "reason": "withCollesGroups (palantir/route.ts) selects the whole colles_students table on every /palantir/people request and swallows errors, bypassing the 6 h rosterRows cache",
+      "action": "reuse rosterRows(), then re-baseline: one read per TTL"
+    },
+    {
+      "file": "tests/logic/palantir-daemon.test.mjs",
+      "test": "a permanent 401 from the publish sink is retried six times before the daemon gives up",
+      "reason": "publish() retries any failure, including permanent 4xx, six times with 30 min sleeps, burning about 2.5 h of the 4 h unit timeout",
+      "action": "fail fast on 4xx other than 408/429, then re-baseline: one attempt"
+    },
+    {
+      "file": "tests/logic/aurion-parsing-edges.test.mjs",
+      "test": "an unescaped ]]> inside a CDATA payload truncates the update silently (pinned defect)",
+      "reason": "page-parser.ts reads a CDATA payload up to the next ]]> and silently truncates the update at an unescaped marker instead of failing loudly",
+      "action": "refuse an unescaped ]]> inside a CDATA payload, then re-baseline: the update must be rejected rather than truncated"
+    },
+    {
+      "file": "tests/logic/aurion-parsing-edges.test.mjs",
+      "test": "a label whose zero-width space sits between two words becomes unmatchable (pinned defect)",
+      "reason": "page-parser.ts strips the zero-width space of a menu label without turning it into a word boundary, so the label becomes unmatchable and the flow answers \"MenuId non trouvé\" (500)",
+      "action": "replace the zero-width space with a space before normalising the label, then re-baseline: the label must match"
+    },
+    {
+      "file": "tests/logic/aurion-parsing-edges.test.mjs",
+      "test": "a truncated grades table with no rendered row is answered as empty (pinned defect)",
+      "reason": "page-parser.ts assertComplete skips the truncation check when no row was parsed (\"if (parsed && ...)\"), so a table announcing 5 rows and rendering none is answered as an empty list and cached 30 min by the route",
+      "action": "run the truncation guard even when no row was parsed, then re-baseline: the table must be refused as truncated"
+    },
+    {
+      "file": "tests/logic/aurion-parsing-edges.test.mjs",
+      "test": "a nested table inside a grades cell shifts every following value one column (pinned defect)",
+      "reason": "page-parser.ts truncates a grades cell at the inner </td> of a nested table, so every following value shifts one column",
+      "action": "parse the cell with nested-tag awareness, then re-baseline: every value must stay in its own column"
+    },
+    {
+      "file": "tests/logic/aurion-parsing-edges.test.mjs",
+      "test": "a grades row missing its leading cells maps values into the wrong columns (pinned defect)",
+      "reason": "page-parser.ts parseGrades has no shape guard (unlike parseChoiceRows), so a row missing its leading cells maps a grade into the code column and a code into the date column",
+      "action": "require the same non-empty column shape as parseChoiceRows, then re-baseline: the row must be refused"
+    },
+    {
+      "file": "tests/logic/aurion-parsing-edges.test.mjs",
+      "test": "an absences date cell with any other style is dropped and shifts every value one column (pinned defect)",
+      "reason": "page-parser.ts only recognises the absence date cell as exactly a gridcell with style text-align: left, so any other style (trailing semicolon, extra attribute) loses the date and shifts every value one column",
+      "action": "match the date cell on its role with a tolerant pattern, then re-baseline: the date must be read"
+    },
+    {
+      "file": "tests/logic/aurion-parsing-edges.test.mjs",
+      "test": "two date-shaped absence cells leave the date empty and shift every value one column (pinned defect)",
+      "reason": "page-parser.ts keeps neither date when an absences row carries two date-shaped cells, leaving the date empty and shifting every value one column",
+      "action": "keep the first date-shaped cell and skip the extra one, then re-baseline: the date must be read and the columns stay aligned"
+    },
+    {
+      "file": "tests/logic/aurion-parsing-edges.test.mjs",
+      "test": "the planning POST advertises the server's current UTC offset, not the requested window's (pinned defect)",
+      "reason": "planning.ts (same pattern in palantir.ts) advertises the server's current UTC offset instead of the offset of the requested window, so a window in the other DST regime is sent an hour off",
+      "action": "derive the offset from the requested window's date, then re-baseline: the advertised offset must match the window"
+    },
+    {
+      "file": "tests/logic/boot-fallbacks.test.mjs",
+      "test": "an unknown route answers the not-found body while a malformed URL bypasses that handler (pinned defect)",
+      "reason": "index.ts leaves FST_ERR_BAD_URL out of FRAMEWORK_MESSAGES and the router replies before the handler, so a malformed URL (GET /%2) is answered with fastify's raw router message instead of the sanitised {statusCode, code, error, message} contract",
+      "action": "map FST_ERR_BAD_URL in the framework handler, then re-baseline: the malformed URL must answer the sanitised body"
+    },
+    {
+      "file": "tests/logic/documents-edges.test.mjs",
+      "test": "a consulter row whose detail renders no datagrid is dropped while its category stays (pinned defect)",
+      "reason": "documents.ts drops a consulter row whose detail page renders no datagrid, while its category is still reported as a normal (ok) leaf with 0 documents",
+      "action": "report the missing datagrid on the leaf, then re-baseline: the category must carry the error instead of looking normal"
+    },
+    {
+      "file": "tests/logic/documents-edges.test.mjs",
+      "test": "a datagrid download answered with a redirect fails instead of following it (pinned defect)",
+      "reason": "documents.ts rejects a download POST answered with a 302 (\"Échec du téléchargement (HTTP 302)\") instead of following the Location, while the consulter path does follow redirects",
+      "action": "follow the redirect like the consulter path, then re-baseline: the download must succeed"
+    },
+    {
+      "file": "tests/logic/documents-edges.test.mjs",
+      "test": "a leaf page answered with a 302 is reported as a ViewState error and drops its category (pinned defect)",
+      "reason": "documents.ts does not follow a 302 leaf response and session-manager.ts parses its empty body as a ViewState, so the leaf errors with \"ViewState non trouvé\" and its whole category disappears",
+      "action": "follow the leaf redirect, then re-baseline: the leaf must be walked instead of dropped"
+    },
+    {
+      "file": "tests/logic/lacatho-menu-fetch.test.mjs",
+      "test": "bytes beyond the declared content-length are ignored, so a short PDF answers 500 (pinned)",
+      "reason": "menu.ts's declared-length guard is unreachable with undici (a short body raises a TypeError caught outside, extra bytes are dropped), so a mis-declared length surfaces as 500 \"Réponse amont illisible\" instead of 502",
+      "action": "map a declared-length mismatch to the 502 branch, then re-baseline: a short PDF must answer 502"
+    },
+    {
+      "file": "tests/logic/lacatho-menu-fetch.test.mjs",
+      "test": "a failed PDF fetch answers 502 without reading the error body, leaving its response unfinished (pinned)",
+      "reason": "menu.ts returns null on !res.ok without reading or cancelling the error body, so the upstream socket and its buffered body stay pinned until GC",
+      "action": "cancel the error body before returning null, then re-baseline: the failed response must be drained"
+    },
+    {
+      "file": "tests/logic/menu-date.test.mjs",
+      "test": "frLongDate reads 03/04/2026 as 3 April, never as 4 March (pinned ambiguity)",
+      "reason": "menu-date.ts always reads the d/m/y path day-first and only swaps when the second slot exceeds 12, so 03/04/2026 is fixed as 3 April and the other reading is unreachable",
+      "action": "make the day-first reading explicit (a documented rule or an explicit format), then re-baseline: the same label must still read 3 April, never 4 March"
+    },
+    {
+      "file": "tests/logic/menu-date.test.mjs",
+      "test": "frLongDate accepts day 45 and 31 February on the month-name path (pinned defect)",
+      "reason": "menu-date.ts returns day Number(m[1]) from the month-name branch without cal(), so 45 janvier 2026 gives day 45 and 31 février 2026 gives 31 February",
+      "action": "reject day > daysIn(month, year) on the month-name path, then re-baseline: the impossible date must be refused"
+    },
+    {
+      "file": "tests/logic/menu-date.test.mjs",
+      "test": "frLongDate accepts 31 November and 30 February through cal (pinned defect)",
+      "reason": "menu-date.ts cal() only bounds the day to 1..31 and the month to 1..12, so 31/11/2026 and 2026-02-30 pass the numeric paths",
+      "action": "bound the day by the month's real length in cal(), then re-baseline: both labels must be refused"
+    },
+    {
+      "file": "tests/logic/menu-date.test.mjs",
+      "test": "frLongDate cannot read the French ordinal 1er, so a 1st-of-month menu date reads as stale (pinned defect)",
+      "reason": "menu-date.ts's regex cannot read the ordinal (the suffix er breaks the day-then-month pattern), so a 1st-of-month label returns null and the menu is reported stale after every TTL, costing one page probe",
+      "action": "allow an optional er suffix, then re-baseline: the ordinal label must be read"
+    },
+    {
+      "file": "tests/logic/upstream-routes-edges.test.mjs",
+      "test": "GET /crous/888/menu serves a 1917 date when the published date is ISO (pinned defect)",
+      "reason": "castelru.ts formats an ISO published date by splitting on \"-\" and reading [d, m, y], so \"2026-09-11\" is served as dimanche 18 mars 1917",
+      "action": "parse the date through frLongDate before formatting, then re-baseline: the ISO date must be served as 11 septembre 2026"
+    },
+    {
+      "file": "tests/logic/upstream-routes-edges.test.mjs",
+      "test": "GET /crous/887/menu answers 500 Erreur base de données for a slashed published date (pinned defect)",
+      "reason": "castelru.ts feeds a slashed date into the date formatter, Intl.DateTimeFormat.format throws RangeError, and toDailyMenu calls it outside any try, so the whole route answers 500 \"Erreur base de données\"",
+      "action": "return an empty date when the parts are not finite, then re-baseline: the route must answer 200 with an empty date"
+    },
+    {
+      "file": "tests/logic/upstream-routes-edges.test.mjs",
+      "test": "POST /print/jobs/upload answers 400 Fichier manquant when a filename* decodes to CR/LF (pinned defect)",
+      "reason": "jobs-upload/route.ts only sees request.file() and @fastify/busboy drops the part whose decoded filename* contains CR/LF, so the caller sees 400 \"Fichier manquant\" as if no file had been sent",
+      "action": "distinguish an unusable file part from a missing one and answer 400 \"Nom de fichier invalide\", then re-baseline: the status must be 400 with an explicit filename message"
+    },
+    {
+      "file": "tests/logic/upstream-routes-edges.test.mjs",
+      "test": "POST /print/jobs/upload re-logs in once after a lost session and answers 500 with Retry-After 5 (pinned defect)",
+      "reason": "print.ts marks the failure not retryable once the upload body has been streamed, so a lost SafeQ session answers 500 \"Erreur amont\" and the file body is never re-sent",
+      "action": "answer 502/503 with Retry-After and a distinct message stating the file can be re-sent, then re-baseline: the status must be 502"
+    },
+    {
+      "file": "tests/logic/upstream-routes-edges.test.mjs",
+      "test": "POST /print/jobs answers 500 Erreur amont with Retry-After 5 when a SafeQ block has no job id or no separator (pinned defect)",
+      "reason": "print.ts throws \"Bloc d'impression sans identifiant\" for a job block without a data-job-id and \"Aperçu d'impression inattendu\" for an overview without a separator, and the route maps both to 500 \"Erreur amont\"",
+      "action": "answer 502 for a drifted page instead of 500, then re-baseline: the status must be 502"
+    },
+    {
+      "file": "tests/logic/upstream-routes-edges.test.mjs",
+      "test": "POST /print/jobs only delimits the attribute-free job div, so an attributed page falls back to the data-job-id marks (pinned defect)",
+      "reason": "print.ts delimits blocks with the literal attribute-free job div, so a real attributed page takes the data-job-id fallback and every mark becomes a row (here an empty phantom row id 9 next to the real job)",
+      "action": "match the block opening with a regex that accepts attributes, then re-baseline: only the real job must be listed"
+    },
+    {
+      "file": "tests/logic/upstream-routes-edges.test.mjs",
+      "test": "POST /print/balance reports a dot-thousands amount as 0, keeps a negative amount and reads empty spans as 0 (pinned defect)",
+      "reason": "print.ts parseAmount rejects any 1-3 digit dot-group amount to avoid a thousands separator, which also swallows a legitimate three-decimal amount, and a missing or empty span is read as 0",
+      "action": "decide the separator from the whole string instead of a fixed 3-digit rule, then re-baseline: the dot-group amount must be read instead of 0"
+    },
+    {
+      "file": "tests/logic/upstream-routes-units.test.mjs",
+      "test": "GET /updates ranks a row without a version first, sorted as the string \"undefined\" (pinned defect)",
+      "reason": "updates.ts sorts with compareVersionsDesc(String(a.version), String(b.version)), so a missing version becomes the string \"undefined\", whose NaN comparison falls into localeCompare and sorts above every digit",
+      "action": "sort rows without a finite version to the end (date descending as a tie-break), then re-baseline: the version-less row must be last"
+    },
+    {
+      "file": "tests/logic/upstream-routes-units.test.mjs",
+      "test": "GET /updates answers 500 Erreur base de données when PostgREST returns HTML with a 200 (pinned defect)",
+      "reason": "supabase.ts rethrows an unparseable body with status 200 attached, so sentry.ts respondDbError sees a non-upstream error and answers 500 \"Erreur base de données\" instead of \"Réponse amont illisible\"",
+      "action": "detect a non-JSON body (or carry the parse flag) in respondDbError and answer 502 \"Réponse amont illisible\" with Retry-After 5, then re-baseline: the status must be 502"
+    },
+    {
+      "file": "tests/logic/upstream-routes-units.test.mjs",
+      "test": "GET /updates answers 500 Erreur base de données for an upstream 429 with no Retry-After (pinned defect)",
+      "reason": "sentry.ts sets isUpstream only for status >= 500, so a PostgREST 429 (or 408) is answered 500 \"Erreur base de données\" and the Retry-After: 5 header is skipped",
+      "action": "treat a non-query upstream status (at minimum 408/429) as upstream, then re-baseline: a 429 must answer 502 with Retry-After 5"
+    },
+    {
+      "file": "tests/logic/upstream-routes-units.test.mjs",
+      "test": "GET /updates answers 200 with an empty list for a PostgREST 200 with an empty body and caches it for 24 h (pinned defect)",
+      "reason": "supabase.ts maps an empty body to an empty array and putCache stores it with the 24 h updates TTL, so /updates is frozen as an empty list for a day even after the upstream recovers",
+      "action": "treat an empty body (or a non-array data) as a fetch failure, then re-baseline: the empty generation must not be cached and the next call must refetch"
+    },
+    {
+      "file": "tests/logic/upstream-routes-units.test.mjs",
+      "test": "GET /crous/888/menu reads an ISO published date as DD-MM-YYYY and serves a 1917 date (pinned defect)",
+      "reason": "castelru.ts formatMenuDate splits the published date on \"-\" and reads [d, m, y], so the ISO \"2026-09-11\" is formatted as 18 mars 1917 while menuDayCurrent reads the same row as a past day",
+      "action": "build the date through the shared frLongDate parser, then re-baseline: the ISO date must be served as 11 septembre 2026"
+    },
+    {
+      "file": "tests/logic/upstream-routes-units.test.mjs",
+      "test": "GET /crous/887/menu rejects on a slashed date and the numbered route answers 500 Erreur base de données (pinned defect)",
+      "reason": "castelru.ts passes a slashed date to the date formatter, Intl throws RangeError: Invalid time value, and toDailyMenu calls it outside any try, so the route answers 500 \"Erreur base de données\"",
+      "action": "return the raw label or an empty date when the parts are not finite, then re-baseline: the route must answer 200"
+    },
+    {
+      "file": "tests/logic/upstream-routes-units.test.mjs",
+      "test": "GET /findmyroom/rooms leaves expired rooms available when the upstream clock is unreadable (pinned defect)",
+      "reason": "findmyroom.ts markClosedRooms returns the payload untouched when the upstream heure cannot be parsed, so rooms past their libre_jusqua stay DISPONIBLE and the building counts stay optimistic",
+      "action": "fall back to the Paris wall clock when heure is unreadable, then re-baseline: the expired rooms must be marked FERMEE"
+    },
+    {
+      "file": "tests/logic/upstream-routes-units.test.mjs",
+      "test": "GET /findmyroom/rooms throws a TypeError when the upstream room list is missing (pinned defect)",
+      "reason": "findmyroom.ts maps rooms.salles without validating it, so a 200 body without salles throws a TypeError that respondFindmyroomError reports as 500 \"Erreur base de données\" instead of 502",
+      "action": "validate that salles is an array and throw an error carrying status 502, then re-baseline: the response must be 502 with Retry-After 5"
+    },
+    {
+      "file": "tests/logic/upstream-routes-units.test.mjs",
+      "test": "GET /findmyroom/buildings answers NaN counts for a building row without dispo (pinned defect)",
+      "reason": "findmyroom.ts computes Math.max(0, b.dispo - closed) and turns an undefined or string dispo into NaN, which fails the whole /findmyroom/buildings response at serialization time",
+      "action": "default the row inputs with Number(b.dispo) || 0 before computing, then re-baseline: the row must be served with a finite count"
+    },
+    {
+      "file": "tests/logic/upstream-routes-units.test.mjs",
+      "test": "GET /badjunia/status answers an all-null status when one service carries no lastCheck (pinned defect)",
+      "reason": "badjunia/route.ts read() throws \"statut badjunia illisible\" when a service's lastCheck.up is not a boolean, and the handler's catch turns the whole payload into the all-null UNKNOWN status with X-BadJunia-Verified false",
+      "action": "treat a missing lastCheck as unknown for that service only, then re-baseline: the sibling services' status must survive"
+    },
+    {
+      "file": "tests/logic/upstream-routes-units.test.mjs",
+      "test": "GET /aurion/documents/file serves a token issued for another account to any caller (pinned defect)",
+      "reason": "documents/route.ts maps a token to the buffered bytes and serves them on redemption without binding the token to the requesting account, so any caller holding the one-shot 60 s token receives the document",
+      "action": "seal the requesting account (or warm key) into the token and require the same session on redemption, then re-baseline: a stranger must be refused"
+    },
+    {
+      "file": "tests/security/probes-boundaries.test.cjs",
+      "test": "a token sealed for one flow opens under another flow with its jar and home, only the nav is dropped (pinned)",
+      "reason": "session-manager.ts openSession returns the same jar and home when the sealed flow differs and only drops nav, so the flow label cannot be used as a security boundary",
+      "action": "include the flow in the AAD (or drop the flow check and document the token as endpoint-agnostic), then re-baseline: a token sealed for another flow must not open"
+    },
+    {
+      "file": "tests/security/probes-concurrency.test.cjs",
+      "test": "three concurrent wrong-password logins for one key collapse into one upstream attempt and one strike (pinned)",
+      "reason": "session-manager.ts single-flights concurrent logins for one credential key, so 3 client attempts become 1 upstream attempt and 1 strike and the brake counts upstream attempts, not client attempts",
+      "action": "count client attempts (or keep the collapse and document it in the refusal contract), then re-baseline: three client attempts must be visible to the brake"
+    },
+    {
+      "file": "tests/security/probes-concurrency.test.cjs",
+      "test": "the refusal brake is keyed on the email and password pair, so varying the password is never braked (pinned)",
+      "reason": "session-manager.ts keys the strike counter on the salted email+password warm key, so every distinct password restarts the counter at 0 and guessing passwords for one known address is never throttled",
+      "action": "key the brake on the salted email (or email + client IP), then re-baseline: the 4th wrong password for one email must be refused without an upstream login"
+    },
+    {
+      "file": "tests/security/probes-concurrency.test.cjs",
+      "test": "a preheat started before revokeSessions is still joined by a post-revoke caller (pinned)",
+      "reason": "session-manager.ts builds the preheat flight key from credentialKey and flow without the revocation epoch, so a post-revoke caller joins the pre-revoke walk and inherits its navigation state",
+      "action": "include epoch in the preheat flight key, then re-baseline: a post-revoke caller must start a new walk"
+    },
+    {
+      "file": "tests/security/probes-concurrency.test.cjs",
+      "test": "revokeSessions clears sessions and the menu registry but keeps flow entries and menu bodies (pinned)",
+      "reason": "session-manager.ts revokeSessions clears sessions, menuRegistry, refusals and eraRefusals but not flowEntries or menuBodies, so a post-revoke caller can be served a pre-revoke viewState or formId",
+      "action": "clear flowEntries and menuBodies in revokeSessions, then re-baseline: neither store must answer after a revoke"
+    },
+    {
+      "file": "tests/security/probes-concurrency.test.cjs",
+      "test": "dropCache during flight discards the in-flight result and lets a second loader run (pinned)",
+      "reason": "supabase.ts dropCache deletes the inFlight entry too, so the running loader drops its value un-stored and a second caller starts a second upstream load for the same key",
+      "action": "leave the in-flight promise registered until it settles and use a dropped flag to decide storage, then re-baseline: the concurrent caller must join the same load"
+    },
+    {
+      "file": "tests/security/probes-concurrency.test.cjs",
+      "test": "the cache entry keeps the first caller's TTL, a later caller's longer TTL is ignored (pinned)",
+      "reason": "supabase.ts answers a live entry with HIT and the entry's own expiry, so the TTL of a key belongs to the first writer and a later caller's longer TTL is silently ignored",
+      "action": "re-stamp (or refuse) a hit whose requested ttlMs differs from the stored entry's, then re-baseline: the longer TTL must be honoured"
+    },
+    {
+      "file": "tests/security/probes-concurrency.test.cjs",
+      "test": "eviction is scoped to the family before the first colon, so a print write evicts another account's print entry (pinned)",
+      "reason": "supabase.ts familyOf splits on the first colon, so print:jobs:* and print:balance:* are one family and a full cache evicts the oldest member of the incoming family even when an older unrelated entry is present",
+      "action": "derive the family from the route namespace (the first two segments), then re-baseline: a balance write must not evict a jobs entry"
+    },
+    {
+      "file": "tests/security/probes-growth.test.cjs",
+      "test": "the menu registry is credential-free: a label learned from one account's render repoints it for every account (pinned)",
+      "reason": "session-manager.ts learnMenuIds writes label to menuid into one process-wide map with no credential or deployment in the key, so one account's render repoints the sidebar for every other account for 30 min",
+      "action": "namespace the registry key by the upstream deployment (or warm key), then re-baseline: another account's render must not change the label"
+    },
+    {
+      "file": "tests/security/probes-growth.test.cjs",
+      "test": "one account's render clears the era refusal of every flow for every account (pinned)",
+      "reason": "session-manager.ts learnMenuIds calls eraRefusals.m.clear(), so one account's successful render wipes every flow's era flag for all accounts and re-arms flows known broken",
+      "action": "clear only the flags the render proves (per flow, not clear()), then re-baseline: the other flows' flags must survive"
+    },
+    {
+      "file": "tests/security/probes-growth.test.cjs",
+      "test": "one account's reduced-menu refusal blocks the flow for every other account (pinned)",
+      "reason": "session-manager.ts keys eraRefusals by flow name only, so one account's reduced-menu error disables the flow for every account for 10 minutes with no upstream retry",
+      "action": "scope the era flag to the deployment, then re-baseline: another account must still be allowed the flow"
+    },
+    {
+      "file": "tests/security/probes-growth.test.cjs",
+      "test": "an unserializable payload is cached at its walked size and served as a hit (pinned)",
+      "reason": "supabase.ts sizeOf walks the value and never serializes it, so a value whose toJSON throws is stored at its walked size and served as a HIT; a circular object would overflow the stack in sizeOf",
+      "action": "validate the payload before putCache (routes only store parsed JSON), then re-baseline: the payload must not be cached"
+    }
+  ],
+  "closed": [
+    "tests/security/probes-growth.test.cjs — stores de session sans plafond : bounded() prend un max (2000, 10000 pour le registre de menus) et évince le moins récemment utilisé, assertion re-baselinée sur le plafond",
+    "tests/logic/dead-code.test.mjs — branche morte prouvée : le garde MAX_ENTRY_AGE_MS ne peut pas décider : la clause age >= e.ttl est retirée du sweep (fix stale-during-outage), une génération périmée reste servable jusqu'à 24 h, assertion re-baselinée sur la clause unique",
+    "tests/logic/dead-code.test.mjs — STATIC_TTL_MS (TTL fantôme 12 h) : constante supprimée, assertion re-baselinée à 0 occurrence",
+    "tests/logic/dead-code.test.mjs — census d'exports : 27 des 32 valeurs non consommées dans src/ ont perdu `export` ; 5 restent exportées car tests/ les importe",
+    "tests/logic/page-parser.test.mjs — parseGrades sans espace final (fixture à 11 cellules) : le test mono-cellule mappait cells[0]→date et attendait code",
+    "tests/logic/menu-pdf-parser.test.mjs — PDF muet : l'assertion demandait un menu non vide alors que le titre demande un refus",
+    "tests/logic/route-contracts.test.mjs — castelru : le 404 est désormais déclaré (notFound sans params)",
+    "tests/logic/route-contracts.test.mjs — declared502 : 10 → 11, POST /colles/group déclare son 502 (le 200 tout-null pendant une panne amont est corrigé en 502 nommé, même commit que le correctif)",
+    "tests/logic/print-client.test.mjs — listJobs : bloc sans data-job-id → ignoré (perte silencieuse, comportement figé) : correctif appliqué (erreur nommée au lieu d une perte/du 0 muet), assertions re-baselinées dans le même commit",
+    "tests/logic/print-client.test.mjs — listJobs : overview sans séparateur → toute la chaîne dans date, owner vide (figé) : correctif appliqué (erreur nommée au lieu d une perte/du 0 muet), assertions re-baselinées dans le même commit",
+    "tests/logic/print-client.test.mjs — getBalance : aucun correctif n'a été appliqué, getBalance/parseAmount (src/routes/print/utils/print.ts) renvoie toujours 0 pour un sélecteur absent comme pour un span vide, et le test « getBalance answers 0 when the selectors are missing, as the print site does, without a 500 » documente ce 0 muet comme le comportement du site d'impression ; les deux défauts restants (montant à groupe de points lu 0, span vide lu 0) restent figés à l'échelle HTTP dans tests/logic/upstream-routes-edges.test.mjs",
+    "tests/logic/page-parser.test.mjs — parsePartialViewState : absence → null (sentinelle « pas de mise à jour ») : correctif appliqué (l'absence et un jeton vide ne sont plus indistinguables), assertion re-baselinée dans le même commit",
+    "tests/logic/http-cache.test.mjs — coût d'un 404 CROUS : 1 appel amont par requête, la sonde de salle court-circuite le menu : correctif appliqué (amplification 1:2 bornée à 1 appel, aucun appel menu), assertion re-baselinée dans le même commit",
+    "tests/security/probes-growth.test.cjs — store de sessions d'impression sans plafond : correctif appliqué (MAX_PRINT_SESSIONS = 512, l'écriture évince la plus ancienne), le test s'appelle désormais « the print session store stops at the count cap and evicts the oldest account » et est re-baseliné sur le plafond"
+  ]
+}
