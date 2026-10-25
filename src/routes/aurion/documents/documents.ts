@@ -1,583 +1,272 @@
-import { SessionManager } from "../utils/session-manager";
+import {
+  type SessionManager,
+  AURION_BASE,
+  HOME_URL,
+  MAIN_MENU_URL,
+  getFlowEntry,
+  putFlowEntry,
+  learnMenuIdsFrom,
+  menuIdFor,
+  purgeMenuIdsById,
+  warmKey,
+  menuBodyFor,
+  putMenuBody,
+  noteEraRefusal,
+  streamActive,
+  streamEmit,
+  streamState,
+} from "../utils/session-manager";
 import { PageParser } from "../utils/page-parser";
-
-export type DocumentCategory = {
-    menuid: string;
-    label: string;
-};
-
-export type DownloadType = "datagrid" | "select" | "consulter";
-
-export type AurionDocumentEntry = {
-    label: string;
-    type: string;
-    size: string;
-    comment: string;
-    category: string;
-    docIndex: number;
-    downloadType: DownloadType;
-    // datagrid & consulter: the submit param that triggers the download
-    submitParam: string;
-    // select: the select field name, the option value, the download button
-    selectName?: string;
-    optionValue?: string;
-    downloadButtonParam?: string;
-    // consulter: the button param to reach the detail page
-    consulterParam?: string;
-};
-
-export type DocumentsResult = {
-    categories: DocumentCategory[];
-    documents: AurionDocumentEntry[];
-};
-
-const BASE = "https://aurion.junia.com";
-const DOC_SUBMENU_ID = "1328656";
-
-// Sidebar entries that are always present but not document leaves.
+import { CACHE_TTL_MS, cacheStateOf, dropCache, peekCache, putCache, putServed, uniq } from "../../supa-data/utils/supabase";
+import { errorMessage, sequential } from "../../../utils/sentry";
+import type { IdRequest } from "../../../types/aurion";
+const CHOIX_GMCC = `${AURION_BASE}/faces/ChoixGmcc.xhtml`;
+type DocumentCategory = { menuid: string; label: string };
+type DownloadType = "datagrid" | "select" | "consulter";
+export type DownloadRequest = IdRequest & { category: string; docIndex: number; downloadType: DownloadType; submitParam: string; selectName?: string; optionValue?: string; downloadButtonParam?: string; consulterParam?: string };
+type AurionDocumentEntry = Omit<DownloadRequest, "email" | "password"> & { label: string; type: string; size: string; comment: string };
+const docKey = (d: AurionDocumentEntry): string => `${d.category}\0${d.docIndex}\0${d.downloadType}\0${d.submitParam}\0${d.selectName ?? "\u0001"}\0${d.optionValue ?? "\u0001"}\0${d.downloadButtonParam ?? "\u0001"}\0${
+  d.consulterParam ?? "\u0001"}\0${d.label}\0${d.type}\0${d.size}\0${d.comment}`;
 const NON_LEAF_IDS = new Set(["0", "6"]);
-
-// --- Parsing helpers ---
-
-function parsePartialViewState(body: string): string {
-    return (
-        body.match(
-            /<update id="[^"]*javax\.faces\.ViewState[^"]*"><!\[CDATA\[([^\]]+)\]\]><\/update>/
-        )?.[1] ?? ""
-    );
+export const MAX_DOWNLOAD_BYTES = 16 * 1024 * 1024;
+export const DOCUMENTS_WALK_BUDGET_MS = 40_000;
+const DOCUMENTS_LEAF_BOUND_MS = 7_000;
+export const documentsWalkBudgetMs = (leaves: number): number => Math.min(DOCUMENTS_WALK_BUDGET_MS, (leaves + 1) * DOCUMENTS_LEAF_BOUND_MS);
+export const documentsCacheKeyOf = (warm: string): string => `aurion-docs:${warm}`;
+export const documentsCacheKey = (b: IdRequest, warm?: string): string => documentsCacheKeyOf(warm ?? warmKey(b.email, b.password));
+const firstRowsKey = (warm: string): string => `aurion-docs-first:${warm}`;
+const LINK_RE = /addSubmitParam\('form',\{'([^']+)':'[^']*'\}\)\.submit\('form'\)(?:(?!addSubmitParam\('form',|<\/tr>)[\s\S])*?<div class="[^"]*troncature-download-doc[^"]*">([^<]+)<\/div>/g;
+const SELECT_RE = /<select[^>]*name="(form:[^"]+documents_input)"[^>]*>([\s\S]*?)<\/select>/;
+const OPTION_RE = /<option value="(\d+)">([^<]+)<\/option>/g;
+const DOWNLOAD_TITLE_RE = /<a[^>]*onclick="PrimeFaces\.addSubmitParam\('form',\{'([^']+)':'[^']*'\}\)\.submit\('form'\)[^"]*"[^>]*title="T\u00E9l\u00E9charger"/;
+const DOWNLOAD_ANCHOR_RE = /<a[^>]*onclick="PrimeFaces\.addSubmitParam\('form',\{'([^']+)':'[^']*'\}\)\.submit\('form'\)/g;
+const BUTTON_RE = /<button[^>]*name="(form:j_idt\d+:\d+:j_idt\d+)"[^>]*>[\s\S]*?Consulter<\/span><\/button>/g;
+const FORM_ACTION_RE = /<form[^>]*id="form"[^>]*action="([^"]+)"/;
+const GRID_CELL_RE = /<td role="gridcell" class="ui-panelgrid-cell">([^<]*)<\/td>/g;
+const SPAN_LABEL_RE = /<span class="preformatted[^"]*">([^<]+)<\/span>/g;
+const leavesOf = (body: string): DocumentCategory[] => PageParser.parseSidebarEntries(body, "item").filter((e) => !NON_LEAF_IDS.has(e.id)).map((e) => ({ menuid: e.id, label: e.label }));
+const cloneLeaves = (list: readonly DocumentCategory[]): DocumentCategory[] => list.map((e) => ({ menuid: e.menuid, label: e.label }));
+const scan = <T>(re: RegExp, html: string, from: number, to: number, pick: (m: RegExpExecArray, i: number) => T): T[] => {
+  const out: T[] = [];
+  re.lastIndex = from;
+  for (let m = re.exec(html), i = 0; m && m.index < to; m = re.exec(html), i++) out.push(pick(m, i));
+  return out;
+};
+const gridTail = (html: string, from: number, to: number): string[] => scan(GRID_CELL_RE, html, from, to, (m) => m[1]!.trim()).slice(5, 8);
+const lastMatch = (re: RegExp, html: string, from: number, to: number): string => scan(re, html, from, to, (m) => m[1]!.trim()).at(-1) ?? "";
+const optionLabel = (html: string, value: string): string => scan(OPTION_RE, html, 0, Infinity, (m) => m).find((m) => m[1] === value)?.[2]!.trim() ?? "";
+const parseDataGridDocuments = (html: string, category: string): AurionDocumentEntry[] =>
+  scan(LINK_RE, html, 0, Infinity, (m) => {
+    const submitParam = m[1]!, cells = gridTail(html, Math.max(html.lastIndexOf("<tr", m.index), 0), html.indexOf("</tr>", m.index) + 5);
+    return { label: m[2]!.trim(), type: cells[0] ?? "", size: cells[1] ?? "", comment: cells[2] ?? "", category, docIndex: parseInt(submitParam.split(":")[2] ?? "0", 10), downloadType: "datagrid", submitParam };
+  });
+function parseSelectDocuments(html: string, category: string): AurionDocumentEntry[] {
+  const select = SELECT_RE.exec(html);
+  if (!select) return [];
+  const anchors = scan(DOWNLOAD_ANCHOR_RE, html, 0, Infinity, (m) => m[1]!);
+  const downloadButtonParam = DOWNLOAD_TITLE_RE.exec(html)?.[1] ?? (anchors.length && anchors.every((a) => a === anchors[0]) ? anchors[0]! : "");
+  if (!downloadButtonParam) return [];
+  return scan(OPTION_RE, select[2]!, 0, Infinity, (m, docIndex) => ({ label: m[2]!.trim(), type: "", size: "", comment: "",
+    category, docIndex, downloadType: "select", submitParam: "", selectName: select[1]!, optionValue: m[1]!, downloadButtonParam }));
 }
-
-function parseSubmenuCommandId(body: string): string {
-    return (
-        body.match(
-            /PrimeFaces\.ab\(\{s:"([^"]+)"[^)]*u:"form:sidebar"/
-        )?.[1] ?? "form:j_idt52"
-    );
-}
-
-type MenuEntry = { id: string; label: string; kind: "item" | "submenu" };
-
-function parseSidebarEntries(body: string): MenuEntry[] {
-    const entries: MenuEntry[] = [];
-    const seen = new Set<string>();
-    const push = (id: string, label: string, kind: MenuEntry["kind"]) => {
-        const key = `${kind}:${id}`;
-        if (seen.has(key)) return;
-        seen.add(key);
-        entries.push({ id, label: label.trim(), kind });
-    };
-    const leaf =
-        /'form:sidebar_menuid':'([\w_]+)'[\s\S]{0,400}?<span class="ui-menuitem-text">([^<]+)<\/span>/g;
-    for (const m of body.matchAll(leaf)) {
-        if (m[1] && m[2]) push(m[1], m[2], "item");
-    }
-    const parent =
-        /submenu_(\d+)[\s\S]{0,300}?<span class="ui-menuitem-text">([^<]+)<\/span>/g;
-    for (const m of body.matchAll(parent)) {
-        if (m[1] && m[2]) push(m[1], m[2], "submenu");
-    }
-    return entries;
-}
-
-/**
- * Type A — DataGrid: direct download links with `troncature-download-doc`.
- * Used by "Mes documents utiles" and "Mes bulletins".
- */
-function parseDataGridDocuments(
-    html: string,
-    category: string
-): AurionDocumentEntry[] {
-    const docs: AurionDocumentEntry[] = [];
-    const linkRe =
-        /addSubmitParam\('form',\{'([^']+)':'[^']*'\}\)\.submit\('form'\)[\s\S]{0,600}?<div class="[^"]*troncature-download-doc[^"]*">([^<]+)<\/div>/g;
-
-    let m: RegExpExecArray | null;
-    while ((m = linkRe.exec(html)) !== null) {
-        const submitParam = m[1];
-        const label = m[2]?.trim();
-        if (!submitParam || !label) continue;
-        const docIndex = parseInt(submitParam.split(":")[2] ?? "0", 10);
-
-        const after = html.slice(m.index, m.index + 4000);
-        const cells = [
-            ...after.matchAll(
-                /<td role="gridcell" class="ui-panelgrid-cell">([^<]*)<\/td>/g
-            ),
-        ].map((c) => c[1]?.trim());
-
-        docs.push({
-            label,
-            type: cells[5] ?? "",
-            size: cells[6] ?? "",
-            comment: cells[7] ?? "",
-            category,
-            docIndex,
-            downloadType: "datagrid",
-            submitParam,
-        });
-    }
-    return docs;
-}
-
-/**
- * Type B — SelectOneMenu: a dropdown of PDF options + a single download
- * button.  Used by "Plan du Campus Lille".
- */
-function parseSelectDocuments(
-    html: string,
-    category: string
-): AurionDocumentEntry[] {
-    const docs: AurionDocumentEntry[] = [];
-
-    // Find the select with its options.
-    const selectMatch = html.match(
-        /<select[^>]*name="(form:[^"]+documents_input)"[^>]*>([\s\S]*?)<\/select>/
-    );
-    if (!selectMatch) return docs;
-
-    const selectName = selectMatch[1];
-    const options = selectMatch[2];
-    if (!selectName || options === undefined) return docs;
-    const optionRe = /<option value="(\d+)">([^<]+)<\/option>/g;
-    let opt: RegExpExecArray | null;
-
-    // Find the download button param (the <a> with title="Télécharger"
-    // whose onclick has addSubmitParam).  Attribute order varies, so we
-    // match onclick first then look for title nearby.
-    const dlButtonMatch = html.match(
-        /<a[^>]*onclick="PrimeFaces\.addSubmitParam\('form',\{'([^']+)':'[^']*'\}\)\.submit\('form'\)[^"]*"[^>]*title="Télécharger"/
-    );
-    if (!dlButtonMatch) return docs;
-    const downloadButtonParam = dlButtonMatch[1];
-    if (!downloadButtonParam) return docs;
-
-    let idx = 0;
-    while ((opt = optionRe.exec(options)) !== null) {
-        const optionValue = opt[1];
-        const label = opt[2]?.trim();
-        if (optionValue === undefined || !label) continue;
-        docs.push({
-            label,
-            type: "",
-            size: "",
-            comment: "",
-            category,
-            docIndex: idx,
-            downloadType: "select",
-            submitParam: "",
-            selectName,
-            optionValue,
-            downloadButtonParam,
-        });
-        idx++;
-    }
-    return docs;
-}
-
-/**
- * Type C — DataTable with "Consulter" buttons: each row leads to a detail
- * page that contains a single downloadable document.  Used by "Mon
- * certificat de scolarité".
- */
-function parseConsulterRows(
-    html: string
-): { consulterParam: string; rowLabel: string }[] {
-    const rows: { consulterParam: string; rowLabel: string }[] = [];
-    const buttonRe =
-        /<button[^>]*name="(form:j_idt\d+:\d+:j_idt\d+)"[^>]*>[\s\S]*?Consulter<\/span><\/button>/g;
-    let m: RegExpExecArray | null;
-    while ((m = buttonRe.exec(html)) !== null) {
-        const consulterParam = m[1];
-        if (!consulterParam) continue;
-        // Search backwards from the button for the inscription label.
-        const before = html.slice(Math.max(0, m.index - 2000), m.index);
-        const spans = [
-            ...before.matchAll(
-                /<span class="preformatted [^"]*">([^<]+)<\/span>/g
-            ),
-        ];
-        const tds = [...before.matchAll(/<td[^>]*>([^<]{2,})<\/td>/g)];
-        const rowLabel =
-            spans[spans.length - 1]?.[1]?.trim() ||
-            tds[tds.length - 1]?.[1]?.trim() ||
-            "Document";
-        rows.push({ consulterParam, rowLabel });
-    }
-    return rows;
-}
-
-/**
- * Parse a single download link from a detail page (reached after clicking
- * "Consulter").  The detail page has a DataGrid with one document.
- */
-function parseDetailPageDocument(
-    html: string,
-    category: string,
-    fallbackLabel: string
-): AurionDocumentEntry | null {
-    const docs = parseDataGridDocuments(html, category);
-    const first = docs[0];
-    if (first) {
-        return {
-            ...first,
-            label: fallbackLabel || first.label,
-            downloadType: "consulter",
-        };
-    }
-    return null;
-}
-
+const parseConsulterRows = (html: string): { consulterParam: string; rowLabel: string }[] =>
+  scan(BUTTON_RE, html, 0, Infinity, (m) => ({ consulterParam: m[1]!, rowLabel: lastMatch(SPAN_LABEL_RE, html, Math.max(0, html.lastIndexOf("<tr", m.index)), m.index) }));
 function parseFormAction(html: string): string {
-    const match = html.match(/<form[^>]*id="form"[^>]*action="([^"]+)"/);
-    return match?.[1]
-        ? new URL(match[1], BASE).toString()
-        : `${BASE}/faces/ChoixGmcc.xhtml`;
+  const m = FORM_ACTION_RE.exec(html);
+  return m ? new URL(m[1]!, AURION_BASE).toString() : CHOIX_GMCC;
 }
-
-function extractHiddenInputs(html: string): URLSearchParams {
-    const fields = new URLSearchParams();
-    for (const m of html.matchAll(
-        /<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"[^>]*>/g
-    )) {
-        if (m[1] && !m[1].endsWith(":filter")) {
-            fields.append(m[1], m[2] ?? "");
-        }
-    }
-    return fields;
-}
-
-// --- Scraper ---
 
 export class AurionDocuments {
-    private sessionManager: SessionManager;
-    private viewState = "";
-    private idInit = "";
-    private submenuCommandId = "";
-
-    constructor(sessionManager: SessionManager) {
-        this.sessionManager = sessionManager;
+  private viewState = "";
+  private idInit = "";
+  private submenuCommandId = "";
+  private docSubmenuId = "";
+  constructor(private sessionManager: SessionManager) {}
+  private async initializeSession() {
+    const home = await this.sessionManager.fetchHomeState();
+    ({ idInit: this.idInit, viewState: this.viewState, formId: this.submenuCommandId } = home);
+    this.docSubmenuId = menuIdFor("Mes documents") ?? "";
+    if (!this.docSubmenuId && this.sessionManager.lastHomeBody)
+      try { this.docSubmenuId = PageParser.parseMenuId(this.sessionManager.lastHomeBody, "Mes documents"); } catch (e) { void e; }
+    if (!this.docSubmenuId) {
+      const fetched = await this.sessionManager.getPage(MAIN_MENU_URL, HOME_URL);
+      putMenuBody(this.sessionManager.credentialKey, fetched.body);
+      const menu = menuBodyFor(this.sessionManager.credentialKey);
+      learnMenuIdsFrom(menu.learned);
+      ({ viewState: this.viewState, commandId: this.submenuCommandId, docSubmenuId: this.docSubmenuId } = menu);
     }
-
-    private async initializeSession() {
-        const homeState = await this.sessionManager.fetchHomePageState();
-        this.idInit = homeState.idInit;
-        this.viewState = homeState.viewState;
+  }
+  private async openDocsSubmenu(timeoutMs = 0): Promise<string> {
+    const res = await this.sessionManager.postMainMenu(this.viewState, this.idInit, { ajax: { source: this.submenuCommandId, submenu: this.docSubmenuId } }, timeoutMs);
+    if (res.statusCode >= 400) { purgeMenuIdsById(this.docSubmenuId); throw new Error(`Sous-menu Documents refusé (HTTP ${res.statusCode})`); }
+    this.assertSession(res.body);
+    this.viewState = this.sessionManager.freshVs || this.viewState;
+    return res.body;
+  }
+  private async openLeaf(menuid: string, renew = true, opened?: Promise<{ page: string; redirect: string }>): Promise<string> {
+    if (renew) await this.openDocsSubmenu(DOCUMENTS_LEAF_BOUND_MS);
+    const leaf = await (opened ?? this.sessionManager.postLeafPartial(this.viewState, this.idInit, menuid, DOCUMENTS_LEAF_BOUND_MS));
+    const page = leaf.page || (await this.leafPage(leaf.redirect));
+    this.assertSession(page);
+    this.viewState = PageParser.parseViewState(page);
+    return page;
+  }
+  private async leafPage(redirect: string): Promise<string> {
+    const target = redirect ? new URL(redirect, AURION_BASE).toString() : CHOIX_GMCC;
+    const res = await this.sessionManager.getPage(target, MAIN_MENU_URL, DOCUMENTS_LEAF_BOUND_MS);
+    return res.statusCode === 200 ? res.body : this.followTo(target, MAIN_MENU_URL);
+  }
+  private async followTo(url: string, referer: string, depth = 0): Promise<string> {
+    if (depth > 5) throw new Error(`Trop de redirections vers ${url}`);
+    const res = await this.sessionManager.send("GET", url, { Referer: referer });
+    if (res.statusCode === 302 && res.headers.location) return this.followTo(new URL(res.headers.location, url).toString(), url, depth + 1);
+    if (res.statusCode >= 400) throw new Error(`Feuille ${url} inaccessible (HTTP ${res.statusCode})`);
+    this.assertSession(res.body);
+    this.viewState = PageParser.parseViewState(res.body);
+    return res.body;
+  }
+  private keepDocsEntry(flow: string, leaves: DocumentCategory[], first?: { menuid: string; html: string }): void {
+    const rows = first ? [...parseDataGridDocuments(first.html, first.menuid), ...parseSelectDocuments(first.html, first.menuid)] : [];
+    if (rows.length) putCache(firstRowsKey(this.sessionManager.credentialKey), CACHE_TTL_MS, rows);
+    putFlowEntry(this.sessionManager.credentialKey, flow, { nav: { viewState: this.viewState, idInit: this.idInit, menuid: "",
+      submenuCommandId: this.submenuCommandId, docSubmenuId: this.docSubmenuId }, formId: "", docs: { leaves: cloneLeaves(leaves) } });
+  }
+  async preheat(flow: string): Promise<void> {
+    await this.initializeSession().catch((error) => { noteEraRefusal(flow, error); throw error; });
+    const leaves = leavesOf(await this.openDocsSubmenu()), [leaf] = leaves;
+    if (!leaf) throw new Error("Aucune catégorie de documents trouvée (dérive du menu amont)");
+    try {
+      this.keepDocsEntry(flow, leaves, { menuid: leaf.menuid, html: await this.openLeaf(leaf.menuid, false) });
+    } catch {
+      this.keepDocsEntry(flow, leaves);
     }
-
-    /** Open the "Mes Documents" submenu, return the partial AJAX body. */
-    private async openDocsSubmenu(): Promise<string> {
-        const menuPage = await this.sessionManager.client.get(
-            `${BASE}/faces/MainMenuPage.xhtml`,
-            { headers: { Referer: `${BASE}/` }, responseType: "text" }
-        );
-        this.viewState =
-            PageParser.parseViewState(menuPage.body) || this.viewState;
-        this.submenuCommandId = parseSubmenuCommandId(menuPage.body);
-
-        const ajax = new URLSearchParams({
-            "javax.faces.partial.ajax": "true",
-            "javax.faces.source": this.submenuCommandId,
-            "javax.faces.partial.execute": this.submenuCommandId,
-            "javax.faces.partial.render": "form:sidebar",
-            [this.submenuCommandId]: this.submenuCommandId,
-            "webscolaapp.Sidebar.ID_SUBMENU": DOC_SUBMENU_ID,
-            form: "form",
-            "form:largeurDivCenter": "885",
-            "form:idInit": this.idInit,
-            "form:sauvegarde": "",
-            "javax.faces.ViewState": this.viewState,
-        }).toString();
-
-        const res = await this.sessionManager.client.post(
-            `${BASE}/faces/MainMenuPage.xhtml`,
-            { body: ajax, responseType: "text" }
-        );
-        this.viewState = parsePartialViewState(res.body) || this.viewState;
-        return res.body;
-    }
-
-    /** Click a leaf menuid, follow redirects, return the final page HTML. */
-    private async openLeaf(menuid: string): Promise<string> {
-        // ViewStates are single-use: reload the submenu before each leaf.
-        await this.openDocsSubmenu();
-
-        const payload = new URLSearchParams({
-            form: "form",
-            "form:largeurDivCenter": "885",
-            "form:idInit": this.idInit,
-            "form:sauvegarde": "",
-            "javax.faces.ViewState": this.viewState,
-            "form:sidebar": "form:sidebar",
-            "form:sidebar_menuid": menuid,
-        }).toString();
-
-        const post = await this.sessionManager.client.post(
-            `${BASE}/faces/MainMenuPage.xhtml`,
-            { body: payload, responseType: "text" }
-        );
-
-        const target = post.headers.location
-            ? new URL(post.headers.location, BASE).toString()
-            : `${BASE}/faces/ChoixGmcc.xhtml`;
-
-        return this.followTo(target, `${BASE}/faces/MainMenuPage.xhtml`);
-    }
-
-    private async followTo(
-        url: string,
-        referer: string,
-        depth = 0
-    ): Promise<string> {
-        if (depth > 5) return "";
-        const res = await this.sessionManager.client.get(url, {
-            headers: { Referer: referer },
-            responseType: "text",
-        });
-        if (res.statusCode === 302 && res.headers.location) {
-            return this.followTo(
-                new URL(res.headers.location, url).toString(),
-                url,
-                depth + 1
-            );
+  }
+  private async openLeaves(walk: DocumentCategory[], renewFirst: boolean, over: () => boolean) {
+    const opened: Promise<{ page: string; redirect: string }>[] = [];
+    if (!walk.length || (renewFirst && !(await this.openDocsSubmenu(DOCUMENTS_LEAF_BOUND_MS).then(() => true, () => false)))) return opened;
+    await sequential(walk, async (leaf) => {
+      const open = this.sessionManager.postLeafPartial(this.viewState, this.idInit, leaf.menuid, DOCUMENTS_LEAF_BOUND_MS);
+      await open.catch(() => {});
+      this.viewState = this.sessionManager.freshVs || this.viewState;
+      opened.push(open);
+    }, over);
+    return opened;
+  }
+  private async walkLeaves(walk: DocumentCategory[], renewFirst: boolean, deadline: number, budgetMs: number, head?: { leaf: DocumentCategory; rows: AurionDocumentEntry[] }) {
+    const categories: DocumentCategory[] = head ? [head.leaf] : [],
+      documents: AurionDocumentEntry[] = head ? [...head.rows] : [];
+    let partial: "leaves" | "budget" | undefined;
+    const over = (): boolean => this.sessionManager.flowTimedOut || Date.now() >= deadline;
+    const opened = await this.openLeaves(walk, renewFirst, over);
+    const stop = (): boolean => over() && ((partial = "budget"), true);
+    await sequential(walk, async (leaf, index) => {
+      const at = Date.now(),
+        before = documents.length,
+        cats = categories.length;
+      let error = "";
+      try {
+        const html = await this.openLeaf(leaf.menuid, !opened[index] && (index > 0 || renewFirst), opened[index]);
+        const simple = [...parseDataGridDocuments(html, leaf.menuid), ...parseSelectDocuments(html, leaf.menuid)];
+        if (simple.length) { categories.push(leaf); documents.push(...simple); } else {
+          const rows = parseConsulterRows(html);
+          if (rows.length) {
+            const plan = this.detailPlan(html), details: string[] = [];
+            for (let i = 0; i < rows.length; i += 8) details.push(...(await Promise.all(rows.slice(i, i + 8).map((row) => this.openConsulterDetail(plan, row.consulterParam)))));
+            documents.push(...rows.map((row, i) => {
+              const [doc] = parseDataGridDocuments(details[i]!, leaf.menuid);
+              if (!doc) throw new Error(`Détail sans document pour ${row.rowLabel}`);
+              return { ...doc, label: row.rowLabel, downloadType: "consulter" as const, consulterParam: row.consulterParam };
+            }));
+            categories.push(leaf);
+          }
         }
-        const vs = PageParser.parseViewState(res.body);
-        if (vs) this.viewState = vs;
-        return res.body;
+      } catch (e) {
+        if ((e as { lostSession?: boolean }).lostSession) throw e;
+        error = errorMessage(e);
+        partial = "leaves";
+      }
+      const status = error ? "error" : categories.length > cats ? "ok" : "empty";
+      streamEmit({ t: status === "error" ? "leaf-error" : "leaf", menuid: leaf.menuid, label: leaf.label, i: index + 1,
+        total: walk.length, ms: Date.now() - at, status, documents: documents.length - before, ...(error ? { error } : {}) });
+      if (error && over()) partial = "budget";
+    }, stop);
+    if (partial === "budget") streamEmit({ t: "budget", name: "documents-walk", budgetMs });
+    return { categories, documents: uniq(documents, docKey), ...(partial ? { partial } : {}) };
+  }
+  async getAllDocuments(email: string, password: string) {
+    await this.sessionManager.login(email, password);
+    const selector = streamActive() && streamState.demand === "selector";
+    const warm = this.sessionManager.credentialKey, e = getFlowEntry(warm, "documents");
+    let leaves: DocumentCategory[], firstRows: AurionDocumentEntry[] | null = null;
+    if (e?.docs) {
+      ({ viewState: this.viewState, idInit: this.idInit, submenuCommandId: this.submenuCommandId } = e.nav);
+      this.docSubmenuId = e.nav.docSubmenuId!;
+      leaves = cloneLeaves(e.docs.leaves);
+      firstRows = peekCache<AurionDocumentEntry[]>(firstRowsKey(warm));
+    } else {
+      if (!this.sessionManager.resumeNav) {
+        await this.initializeSession().catch((error) => { noteEraRefusal("documents", error); throw error; });
+        this.sessionManager.resumeNav = { viewState: this.viewState, idInit: this.idInit, menuid: "", submenuCommandId: this.submenuCommandId, docSubmenuId: this.docSubmenuId };
+      }
+      ({ viewState: this.viewState, idInit: this.idInit, submenuCommandId: this.submenuCommandId } = this.sessionManager.resumeNav);
+      this.docSubmenuId = this.sessionManager.resumeNav.docSubmenuId!;
+      leaves = leavesOf(await this.openDocsSubmenu());
+      this.keepDocsEntry("documents", leaves);
     }
-
-    /**
-     * Discover document leaves dynamically from the "Mes Documents" submenu,
-     * then parse each leaf according to its structure type.  Leaves with no
-     * downloadable documents are silently skipped.
-     */
-    async getAllDocuments(
-        email: string,
-        password: string
-    ): Promise<DocumentsResult> {
-        return this.sessionManager.run(email, password, async () => {
-            await this.initializeSession();
-
-            // Discover the leaves.
-            const submenuBody = await this.openDocsSubmenu();
-            const entries = parseSidebarEntries(submenuBody);
-            const leaves: DocumentCategory[] = entries
-                .filter(
-                    (e) => e.kind === "item" && !NON_LEAF_IDS.has(e.id)
-                )
-                .map((e) => ({ menuid: e.id, label: e.label }));
-
-            // An empty submenu means it did not open — most likely a stale
-            // session. Throw so `run` retries with a fresh login instead of
-            // silently returning an empty document list.
-            if (leaves.length === 0) {
-                throw new Error("Aucune catégorie de documents trouvée");
-            }
-
-            const categories: DocumentCategory[] = [];
-            const documents: AurionDocumentEntry[] = [];
-
-            for (const leaf of leaves) {
-                const html = await this.openLeaf(leaf.menuid);
-
-                // Type A: DataGrid with troncature-download-doc
-                const gridDocs = parseDataGridDocuments(html, leaf.menuid);
-                if (gridDocs.length > 0) {
-                    categories.push(leaf);
-                    documents.push(...gridDocs);
-                    continue;
-                }
-
-                // Type B: SelectOneMenu with documents_input
-                const selectDocs = parseSelectDocuments(html, leaf.menuid);
-                if (selectDocs.length > 0) {
-                    categories.push(leaf);
-                    documents.push(...selectDocs);
-                    continue;
-                }
-
-                // Type C: DataTable with "Consulter" buttons
-                const consulterRows = parseConsulterRows(html);
-                if (consulterRows.length > 0) {
-                    categories.push(leaf);
-                    for (const row of consulterRows) {
-                        // Click "Consulter" to reach the detail page.
-                        const detailHtml = await this.openConsulterDetail(
-                            html,
-                            row.consulterParam
-                        );
-                        const doc = parseDetailPageDocument(
-                            detailHtml,
-                            leaf.menuid,
-                            row.rowLabel
-                        );
-                        if (doc) {
-                            doc.consulterParam = row.consulterParam;
-                            documents.push(doc);
-                        }
-                    }
-                    continue;
-                }
-
-                // No downloadable documents on this leaf — skip it.
-            }
-
-            return { categories, documents };
-        });
+    if (selector) {
+      streamEmit({ t: "categories", categories: leaves });
+      streamEmit({ t: "partial", reason: "selector" });
+      return { categories: leaves, documents: [] };
     }
-
-    /**
-     * Click a "Consulter" button on a leaf page and follow the redirect
-     * to the detail page that contains the actual download link.
-     */
-    private async openConsulterDetail(
-        leafHtml: string,
-        consulterParam: string
-    ): Promise<string> {
-        const viewState = PageParser.parseViewState(leafHtml);
-        const formAction = parseFormAction(leafHtml);
-
-        const fields = extractHiddenInputs(leafHtml);
-        fields.set(consulterParam, consulterParam);
-        fields.set("javax.faces.ViewState", viewState);
-
-        const post = await this.sessionManager.client.post(formAction, {
-            body: fields.toString(),
-            responseType: "text",
-        });
-
-        if (post.statusCode === 302 && post.headers.location) {
-            const target = new URL(post.headers.location, BASE).toString();
-            return this.followTo(target, formAction);
-        }
-        return post.body;
+    const budget = documentsWalkBudgetMs(leaves.length), deadline = Date.now() + budget, [first, ...rest] = leaves;
+    const head = firstRows ? { leaf: first!, rows: firstRows } : undefined;
+    if (e?.docs && firstRows && rest.length > 0 && !cacheStateOf(documentsCacheKeyOf(warm))) {
+      void this.walkLeaves(rest, true, deadline, budget, head).then((out) => { const k = documentsCacheKeyOf(warm); if (out.partial) dropCache(k); else { putCache(k, CACHE_TTL_MS, out); putServed(k, out); } }).catch(Boolean);
+      return { categories: leaves.slice(0, 1), documents: firstRows };
     }
-
-    /**
-     * Download a single document.  Re-walks the navigation chain, then
-     * triggers the download according to the document's type.
-     */
-    async downloadDocument(
-        email: string,
-        password: string,
-        category: string,
-        docIndex: number,
-        downloadType: DownloadType,
-        submitParam: string,
-        selectName?: string,
-        optionValue?: string,
-        downloadButtonParam?: string,
-        consulterParam?: string
-    ): Promise<{ buffer: Buffer; filename: string }> {
-        return this.sessionManager.run(email, password, async () => {
-            await this.initializeSession();
-
-            const html = await this.openLeaf(category);
-
-            if (downloadType === "datagrid") {
-                return this.downloadDataGrid(html, submitParam);
-            }
-
-            if (downloadType === "select") {
-                return this.downloadSelect(
-                    html,
-                    selectName ?? "",
-                    optionValue ?? "",
-                    downloadButtonParam ?? ""
-                );
-            }
-
-            // consulter
-            return this.downloadConsulter(
-                html,
-                consulterParam ?? "",
-                submitParam
-            );
-        });
+    return this.walkLeaves(firstRows ? rest : leaves, !!e, deadline, budget, head);
+  }
+  private detailPlan(leafHtml: string) {
+    const fields = PageParser.extractHiddenInputs(leafHtml), viewState = PageParser.parseViewState(leafHtml);
+    fields.set("javax.faces.ViewState", viewState);
+    return { action: parseFormAction(leafHtml), fields, body: fields.toString() };
+  }
+  private async openConsulterDetail(plan: { action: string; body: string }, consulterParam: string): Promise<string> {
+    const post = await this.sessionManager.send("POST", plan.action, {}, `${plan.body}&${new URLSearchParams({ [consulterParam]: consulterParam }).toString()}`);
+    if (post.statusCode === 302 && post.headers.location) return this.followTo(new URL(post.headers.location, AURION_BASE).toString(), plan.action);
+    this.assertSession(post.body);
+    return post.body;
+  }
+  private assertSession(body: string): void {
+    if (PageParser.LOST_SESSION_MARK.test(body)) throw Object.assign(new Error("Session amont perdue (page de reconnexion rendue)"), { lostSession: true });
+  }
+  async downloadDocument(b: DownloadRequest): Promise<{ buffer: Buffer; filename: string }> {
+    await this.sessionManager.login(b.email, b.password);
+    await this.initializeSession();
+    const html = await this.openLeaf(b.category);
+    if (b.downloadType === "select")
+      return this.downloadFrom(this.detailPlan(html), optionLabel(html, b.optionValue!), { [b.selectName!]: b.optionValue!, [b.downloadButtonParam!]: b.downloadButtonParam! });
+    const detail = b.downloadType === "datagrid" ? html : await this.openConsulterDetail(this.detailPlan(html), b.consulterParam!);
+    return this.downloadFrom(this.detailPlan(detail), this.gridFilename(detail, b.submitParam), { [b.submitParam]: b.submitParam });
+  }
+  private async downloadFrom(plan: { action: string; fields: URLSearchParams }, filename: string, extra: Record<string, string>): Promise<{ buffer: Buffer; filename: string }> {
+    const fields = new URLSearchParams(plan.fields);
+    for (const [name, value] of Object.entries(extra)) fields.set(name, value);
+    return this.fetchDownload(plan.action, fields, filename);
+  }
+  private gridFilename(html: string, submitParam: string): string {
+    const hit = scan(LINK_RE, html, 0, Infinity, (m) => m).filter((m) => m[1] === submitParam).at(-1);
+    return hit ? hit[2]!.trim() : "";
+  }
+  private async fetchDownload(formAction: string, fields: URLSearchParams, fallbackFilename: string): Promise<{ buffer: Buffer; filename: string }> {
+    const body = fields.toString();
+    let url = formAction, res = await this.sessionManager.open("POST", url, {}, body), buffer = await this.sessionManager.read(res, url, MAX_DOWNLOAD_BYTES);
+    for (let hop = 0; hop < 5 && res.statusCode === 302 && res.headers.location; hop++) {
+      url = new URL(res.headers.location, url).toString();
+      res = await this.sessionManager.open("GET", url, {}, undefined);
+      buffer = await this.sessionManager.read(res, url, MAX_DOWNLOAD_BYTES);
     }
-
-    private async downloadDataGrid(
-        html: string,
-        submitParam: string
-    ): Promise<{ buffer: Buffer; filename: string }> {
-        const viewState = PageParser.parseViewState(html);
-        const formAction = parseFormAction(html);
-
-        // Recover the filename from the grid.
-        const linkRe =
-            /addSubmitParam\('form',\{'([^']+)':'[^']*'\}\)\.submit\('form'\)[\s\S]{0,600}?<div class="[^"]*troncature-download-doc[^"]*">([^<]+)<\/div>/g;
-        let filename = "";
-        let m: RegExpExecArray | null;
-        while ((m = linkRe.exec(html)) !== null) {
-            if (m[1] === submitParam) {
-                filename = m[2]?.trim() ?? "";
-                break;
-            }
-        }
-
-        const fields = extractHiddenInputs(html);
-        fields.set(submitParam, submitParam);
-        fields.set("javax.faces.ViewState", viewState);
-
-        return this.fetchDownload(formAction, fields, filename);
-    }
-
-    private async downloadSelect(
-        html: string,
-        selectName: string,
-        optionValue: string,
-        downloadButtonParam: string
-    ): Promise<{ buffer: Buffer; filename: string }> {
-        const viewState = PageParser.parseViewState(html);
-        const formAction = parseFormAction(html);
-
-        // Recover the filename from the matching <option>.
-        const filename =
-            html.match(
-                new RegExp(`<option value="${optionValue}">([^<]+)</option>`)
-            )?.[1]?.trim() ?? "document.pdf";
-
-        const fields = extractHiddenInputs(html);
-        fields.set(selectName, optionValue);
-        fields.set(downloadButtonParam, downloadButtonParam);
-        fields.set("javax.faces.ViewState", viewState);
-
-        return this.fetchDownload(formAction, fields, filename);
-    }
-
-    private async downloadConsulter(
-        leafHtml: string,
-        consulterParam: string,
-        submitParam: string
-    ): Promise<{ buffer: Buffer; filename: string }> {
-        // Step 1: click "Consulter" to reach the detail page.
-        const detailHtml = await this.openConsulterDetail(
-            leafHtml,
-            consulterParam
-        );
-
-        // Step 2: download from the detail page (same as datagrid).
-        return this.downloadDataGrid(detailHtml, submitParam);
-    }
-
-    private async fetchDownload(
-        formAction: string,
-        fields: URLSearchParams,
-        fallbackFilename: string
-    ): Promise<{ buffer: Buffer; filename: string }> {
-        const dl = await this.sessionManager.client.post(formAction, {
-            body: fields.toString(),
-            responseType: "buffer",
-        });
-
-        if (dl.statusCode !== 200 || dl.body.length === 0) {
-            throw new Error(`Échec du téléchargement (HTTP ${dl.statusCode})`);
-        }
-
-        const cd = dl.headers["content-disposition"] as string | undefined;
-        const cdFilename = cd?.match(/filename="([^"]+)"/)?.[1];
-        return {
-            buffer: dl.body,
-            filename: cdFilename || fallbackFilename,
-        };
-    }
+    if (res.statusCode !== 200 || buffer.length === 0) throw new Error(`Échec du téléchargement (HTTP ${res.statusCode})`);
+    return { buffer, filename: String(res.headers["content-disposition"] ?? "").match(/filename="([^"]+)"/)?.[1] || fallbackFilename };
+  }
 }

@@ -1,22 +1,36 @@
-# fly.toml app configuration file generated for mauria-api on 2025-09-16T09:48:17+02:00
-#
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
-#
-
 app = 'mauria-api'
-primary_region = 'ams'
+primary_region = 'cdg'
 
 [build]
+  dockerfile = 'Dockerfile'
+  compression = 'zstd'
+  compression_level = 3
+
+[env]
+  PORT = '8080'
+  AURION_MAX_SOCKETS = '32'
 
 [http_service]
   internal_port = 8080
   force_https = true
   auto_stop_machines = 'stop'
   auto_start_machines = true
-  min_machines_running = 0
+  min_machines_running = 1
   processes = ['app']
 
+[http_service.concurrency]
+  type = 'requests'
+  soft_limit = 20
+  hard_limit = 25
+
+[[http_service.checks]]
+  interval = '30s'
+  timeout = '5s'
+  grace_period = '20s'
+  method = 'get'
+  path = '/healthz'
+
 [[vm]]
-  memory = '512mb'
+  memory = '256mb'
   cpu_kind = 'shared'
-  cpus = 2
+  cpus = 1

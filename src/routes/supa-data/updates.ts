@@ -1,84 +1,23 @@
-import { FastifyInstance } from "fastify";
-import { getSupabase } from "./utils/supabase";
-
-export async function updatesRoute(fastify: FastifyInstance) {
-    fastify.get(
-        "/updates",
-        {
-            schema: {
-                response: {
-                    200: {
-                        type: "array",
-                        items: {
-                            type: "object",
-                            properties: {
-                                version: { type: "string" },
-                                date: { type: "string" },
-                                titleVisu: { type: "string" },
-                                contentVisu: { type: "string" },
-                                titleDev: { type: "string" },
-                                contentDev: { type: "string" },
-                            },
-                            required: [
-                                "version",
-                                "date",
-                                "titleVisu",
-                                "contentVisu",
-                                "titleDev",
-                                "contentDev",
-                            ],
-                        },
-                    },
-                    500: {
-                        type: "object",
-                        properties: {
-                            success: { type: "boolean" },
-                            error: { type: "string" },
-                        },
-                        required: ["success", "error"],
-                    },
-                },
-            },
-        },
-        async (request, reply) => {
-            try {
-                const updates = await getUpdates();
-                return updates;
-            } catch (error) {
-                return reply.status(500).send({
-                    success: false,
-                    error:
-                        error instanceof Error
-                            ? error.message
-                            : "Unknown error",
-                });
-            }
-        }
-    );
-}
-
-// Récupérer les updates depuis Firebase
-export const getUpdates = async () => {
-    try {
-        const { data, error } = await getSupabase().from("changelogs").select("*");
-        if (error) throw error;
-
-        // tri par version décroissante : la plus récente en premier
-        // (le client utilise data[0] comme dernière update)
-        data.sort((a, b) => Number(b.version) - Number(a.version));
-
-        // formatage des données pour les envoyer au client
-        return data.map((update) => {
-            return {
-                version: update.version,
-                date: update.date,
-                titleVisu: "Ajouts",
-                contentVisu: update.ajouts,
-                titleDev: "Changements",
-                contentDev: update.changements,
-            };
-        });
-    } catch (error) {
-        throw new Error("Failed to fetch updates: " + error);
-    }
+import { capMap } from "../../utils/sentry";
+import { cachedRows, rows, supaGetRoute, UPDATES_TTL_MS } from "./utils/supabase";
+export const updatesRoute = supaGetRoute({
+  url: "/updates",
+  cacheKey: "updates",
+  fetch: () => getUpdates(),
+  ok: rows({ version: "string", date: "string", titleVisu: "string", contentVisu: "string", titleDev: "string", contentDev: "string" }),
+  serve: (data, query) => (query.head === "1" ? (data as unknown[]).slice(0, 1) : data),
+});
+type Row = { version?: string | null; date?: string | null; ajouts?: string | null; changements?: string | null };
+const partsCache = new Map<string, number[]>(), versionParts = (v: string): number[] => { let p = partsCache.get(v); if (!p) capMap(partsCache.set(v, (p = v.split(".").map(Number))), 4096); return p; };
+const compareVersionsDesc = (a: string, b: string): number => {
+  const pa = versionParts(a), pb = versionParts(b), na = pa.some(Number.isFinite), nb = pb.some(Number.isFinite);
+  if (!na || !nb) return Number(nb) - Number(na) || b.localeCompare(a);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) { const x = pa[i] ?? 0, y = pb[i] ?? 0; if (x !== y) return y - x; }
+  return 0;
 };
+export const getUpdates = () =>
+  cachedRows("changelogs", "updates", (list: Row[]) =>
+    list.sort((a, b) => compareVersionsDesc(String(a.version), String(b.version))).map((u) => ({ version: u.version ?? "", date: u.date ?? "",
+      titleVisu: "Ajouts", contentVisu: u.ajouts ?? "", titleDev: "Changements", contentDev: u.changements ?? "" })),
+    { select: "version,date,ajouts,changements", ttlMs: UPDATES_TTL_MS },
+  );

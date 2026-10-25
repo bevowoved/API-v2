@@ -1,0 +1,6 @@
+{
+  "name": "@sentry/bundler-plugins",
+  "version": "11.6.0-empty",
+  "private": true,
+  "description": "Empty stand-in: @sentry/node lists the bundler plugins as a dependency but only its ./vite, ./rollup, ./webpack and ./esbuild subpaths load them, and this app imports none of them."
+}

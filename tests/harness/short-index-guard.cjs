@@ -1,0 +1,1 @@
+const realSetTimeout=global.setTimeout;global.setTimeout=function(fn,ms,...args){if(ms!==15e3)return realSetTimeout(fn,ms,...args);return process.stderr.write("[short-index-guard] 15000 ms guard armed at 50 ms\n"),realSetTimeout(fn,50,...args)};

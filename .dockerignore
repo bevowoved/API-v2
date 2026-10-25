@@ -1,8 +1,7 @@
-/node_modules
-.env.dev
-*.DS_Store
-
-*.js
-*.map
-*.d.ts
-appli-api.ts
+*
+!src/
+!scripts/lock.mjs
+!scripts/stubs/
+!package.json
+!package-lock.json
+!tsconfig.json

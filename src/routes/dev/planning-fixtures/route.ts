@@ -1,64 +1,22 @@
-import { FastifyInstance } from "fastify";
-import { readdir, readFile } from "fs/promises";
-import path from "path";
-
-// Dev-only tooling: serves the Aurion planning fixtures collected by
-// scripts/aurion-fixtures.ts (scripts/dumps/fixtures/, gitignored, never
-// shipped in dist/). Only registered when TS_NODE_DEV is set (see
-// src/index.ts) so this never exists in production.
-const FIXTURES_DIR = path.join(__dirname, "..", "..", "..", "..", "scripts", "dumps", "fixtures");
-
+import type { FastifyInstance } from "fastify";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+import { errorResponseSchema } from "../../../utils/sentry";
+const FIXTURES_DIR = process.env.PLANNING_FIXTURES_DIR || join(__dirname, "..", "..", "..", "..", "scripts", "dumps", "fixtures"),
+  FILE_SCHEMA = { params: { type: "object", properties: { file: { type: "string" } }, required: ["file"] },
+    response: { 200: { type: "object", properties: { success: { type: "boolean" }, data: { type: "array", items: { type: "object", additionalProperties: true } } }, required: ["success", "data"] }, 404: errorResponseSchema } };
 async function readFixture(name: string) {
-    // Reject anything that isn't a bare filename before it ever touches the
-    // filesystem: this endpoint only runs locally, but a path like
-    // "../../../etc/passwd" should still fail closed.
-    if (!/^[\w.-]+\.json$/.test(name)) return null;
-    try {
-        const raw = await readFile(path.join(FIXTURES_DIR, name), "utf-8");
-        return JSON.parse(raw);
-    } catch {
-        return null;
-    }
+  if (!/^[\w.-]+\.json$/.test(name)) return null;
+  try { return JSON.parse(await readFile(join(FIXTURES_DIR, name), "utf-8")); } catch { return null; }
 }
-
 export async function planningFixturesRoute(fastify: FastifyInstance) {
-    fastify.get("/dev/planning-fixtures", async () => {
-        const index = await readFixture("_index.json");
-        const files = (await readdir(FIXTURES_DIR).catch(() => [])).filter(
-            (file) => file.endsWith(".json") && !file.startsWith("_")
-        );
-
-        const fixtures = await Promise.all(
-            files.map(async (file) => {
-                const data = await readFixture(file);
-                return {
-                    file,
-                    label: data?.label ?? file,
-                    weekStart: data?.weekStart ?? null,
-                    events: Array.isArray(data?.events)
-                        ? data.events.length
-                        : 0,
-                };
-            })
-        );
-
-        return {
-            weekStart: index?.weekStart ?? null,
-            fixtures: fixtures.sort((a, b) => a.label.localeCompare(b.label)),
-        };
-    });
-
-    fastify.get<{ Params: { file: string } }>(
-        "/dev/planning-fixtures/:file",
-        async (request, reply) => {
-            const data = await readFixture(request.params.file);
-            if (!data) {
-                return reply.status(404).send({
-                    success: false,
-                    error: "Fixture not found",
-                });
-            }
-            return { success: true, data: data.events ?? [] };
-        }
-    );
+  fastify.get("/dev/planning-fixtures", async () => {
+    const index = await readFixture("_index.json"), files = (await readdir(FIXTURES_DIR)).filter((f) => !f.startsWith("_"));
+    const fixtures = await Promise.all(files.map(async (file) => { const d = await readFixture(file); return { file, label: d.label ?? file, weekStart: d.weekStart ?? null, events: d.events?.length ?? 0 }; }));
+    return { weekStart: index.weekStart, fixtures: fixtures.toSorted((a, b) => a.label.localeCompare(b.label)) };
+  });
+  fastify.get<{ Params: { file: string } }>("/dev/planning-fixtures/:file", { schema: FILE_SCHEMA }, async (request, reply) => {
+    const data = await readFixture(request.params.file);
+    return data ? { success: true, data: data.events ?? [] } : reply.status(404).send({ success: false, error: "Fixture introuvable" });
+  });
 }
