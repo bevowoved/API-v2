@@ -1,0 +1,1 @@
+const realSetTimeout=global.setTimeout,shortenFromMs=Number(process.env.T_SHIM_MIN_MS??6e4),shortenBelowMs=Number(process.env.T_SHIM_BELOW_MS??3.5*36e5),shortenToMs=Number(process.env.T_SHIM_TO_MS??300);global.setTimeout=function(fn,ms,...args){return realSetTimeout(fn,typeof ms==="number"&&ms>=shortenFromMs&&ms<shortenBelowMs?shortenToMs:ms,...args)};

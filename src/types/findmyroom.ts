@@ -1,39 +1,4 @@
-export interface Building {
-    /** Building code as used by findmyroom, e.g. "IC2", "PR_39BV". */
-    code: string;
-    /** Display name; findmyroom currently reuses the code here. */
-    nom: string;
-    /** Count of rooms free right now. */
-    dispo: number;
-    /** Total bookable rooms in the building. */
-    total: number;
-    /** dispo / total as a whole-number percentage, pre-computed by the source. */
-    pourcentage: number;
-    /** Rooms past their closing time (not findmyroom's, see markClosedRooms). */
-    fermees: number;
-}
-
-/**
- * "FERMEE" isn't findmyroom's: it's set here for rooms still reported free
- * past their closing time (see markClosedRooms).
- */
+export interface Building { code: string; nom: string; dispo: number; total: number; pourcentage: number; fermees?: number; }
 export type RoomStatus = "DISPONIBLE" | "OCCUPEE" | "FERMEE";
-
-export interface Room {
-    salle: string;
-    statut: RoomStatus;
-    capacite: number | null;
-    type_salle: string | null;
-    /** Human sentence, e.g. "libre jusqu'à 20:00" / "libre à 19:30". */
-    libre_jusqua: string | null;
-    libre_jusqua_en: string | null;
-    /** Human sentence, e.g. "réservable toute la journée". */
-    duree_max: string | null;
-    duree_max_en: string | null;
-}
-
-export interface RoomsForBuilding {
-    date: string;
-    heure: string;
-    salles: Room[];
-}
+interface Room { salle: string; statut: RoomStatus; capacite: number | null; type_salle: string | null; libre_jusqua: string | null; libre_jusqua_en: string | null; duree_max: string | null; duree_max_en: string | null; }
+export interface RoomsForBuilding { date: string; heure: string; salles: Room[]; }

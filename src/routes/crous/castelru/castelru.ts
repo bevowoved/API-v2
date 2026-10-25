@@ -1,171 +1,39 @@
-import { DailyMenu, MenuSection, RestaurantMenu } from "../../../types/lacatho";
-
-/**
- * Menu du CastelRU (seul RU de Châteauroux), scrappé depuis le site du Crous
- * Orléans-Tours. La page publie une liste de blocs `.menu`, un par jour ouvré,
- * chacun contenant un repas (`.meal`) avec des rubriques (Entrées, Plats,
- * Laitage, Desserts) sous forme de listes imbriquées.
- *
- * Le markup est stable et propre : on le reconstruit à la regex, sans dépendance
- * HTML supplémentaire.
- */
-
-const MENU_PAGE_URL =
-    "https://www.crous-orleans-tours.fr/restaurant/le-castelru/";
-
-const CACHE_TTL_MS = 30 * 60 * 1000;
-
-const USER_AGENT =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:135.0) Gecko/20100101 Firefox/135.0";
-
-const MONTHS = [
-    "janvier",
-    "février",
-    "mars",
-    "avril",
-    "mai",
-    "juin",
-    "juillet",
-    "août",
-    "septembre",
-    "octobre",
-    "novembre",
-    "décembre",
-];
-
-let cache: { data: DailyMenu; fetchedAt: number } | null = null;
-
-const stripTags = (s: string) => {
-    // Répété jusqu'à stabilité : une seule passe laisserait passer des balises
-    // imbriquées type "<<span>span>".
-    let previous: string;
-    let current = s;
-    do {
-        previous = current;
-        current = current.replace(/<[^>]*>/g, "");
-    } while (current !== previous);
-    return current.trim();
-};
-
-const ENTITIES: Record<string, string> = {
-    "&rsquo;": "’",
-    "&#8217;": "’",
-    "&#39;": "’",
-    "&lsquo;": "‘",
-    "&nbsp;": " ",
-    "&eacute;": "é",
-    "&egrave;": "è",
-    "&agrave;": "à",
-    "&ecirc;": "ê",
-    "&ocirc;": "ô",
-    "&ccedil;": "ç",
-    "&quot;": '"',
-    "&amp;": "&",
-};
-
-// Une seule passe : `&amp;` est traité en même temps que les autres, donc
-// jamais re-décodé (pas de double-unescaping).
-const decodeEntities = (s: string) =>
-    s.replace(
-        /&(?:rsquo|lsquo|nbsp|eacute|egrave|agrave|ecirc|ocirc|ccedil|quot|amp|#8217|#39);/g,
-        (match) => ENTITIES[match] ?? match
-    );
-
-const clean = (s: string) =>
-    decodeEntities(stripTags(s)).replace(/\s+/g, " ").trim();
-
-/** "Menu du mercredi 9 septembre 2026" -> { day, month (1-12), year } */
-function parseMenuDate(
-    label: string
-): { day: number; month: number; year: number } | null {
-    const m = label.toLowerCase().match(/(\d{1,2})\s+([a-zéûôàè]+)\s+(\d{4})/);
-    if (!m || !m[1] || !m[2] || !m[3]) return null;
-    const month = MONTHS.indexOf(m[2]) + 1;
-    if (!month) return null;
-    return { day: Number(m[1]), month, year: Number(m[3]) };
-}
-
-/** Reconstruit les rubriques d'un bloc `.meal_foodies`. */
-function parseFoodies(html: string): MenuSection[] {
-    const sections: MenuSection[] = [];
-    // Chaque rubrique = <li>Titre<ul><li>item</li>...</ul></li>
-    const liRegex = /<li>\s*([^<]+?)\s*<ul>([\s\S]*?)<\/ul>\s*<\/li>/g;
-    let match: RegExpExecArray | null;
-    while ((match = liRegex.exec(html)) !== null) {
-        const title = clean(match[1] ?? "");
-        const items = [...(match[2] ?? "").matchAll(/<li>([\s\S]*?)<\/li>/g)]
-            .map((i) => clean(i[1] ?? ""))
-            .filter(Boolean);
-        if (title && items.length) sections.push({ title, items });
-    }
-    return sections;
-}
-
-function parseCastelRuMenu(html: string): DailyMenu {
-    const now = new Date();
-    const today = {
-        day: now.getDate(),
-        month: now.getMonth() + 1,
-        year: now.getFullYear(),
-    };
-
-    // Un segment par jour. Le dernier segment traîne du markup de pied de page,
-    // sans conséquence : les regexes de rubriques ne matchent que le menu.
-    const segments = html.split('<div class="menu">').slice(1);
-
-    const blocks = segments.map((segment) => {
-        const label = clean(
-            segment.match(/<time class="menu_date_title">([\s\S]*?)<\/time>/)?.[1] ??
-                ""
-        );
-        const parsed = parseMenuDate(label);
-        const isToday =
-            !!parsed &&
-            parsed.day === today.day &&
-            parsed.month === today.month &&
-            parsed.year === today.year;
-        return { label, segment, isToday };
-    });
-
-    // Le menu du jour, sinon le prochain jour publié (premier segment).
-    const chosen = blocks.find((b) => b.isToday) ?? blocks[0];
-    if (!chosen) {
-        return { date: "", pdfUrl: MENU_PAGE_URL, restaurants: [] };
-    }
-
-    const sections = parseFoodies(chosen.segment);
-    const restaurants: RestaurantMenu[] =
-        sections.length > 0
-            ? [{ id: "castelru", name: "Le Castel'RU", page: 1, sections }]
-            : [];
-
-    return {
-        date: chosen.label.replace(/^menu du\s+/i, ""),
-        pdfUrl: MENU_PAGE_URL,
-        restaurants,
-    };
-}
-
-async function fetchCastelRuMenu(): Promise<DailyMenu> {
-    const res = await fetch(MENU_PAGE_URL, {
-        headers: { "User-Agent": USER_AGENT },
-    });
-    if (!res.ok) {
-        throw new Error(`CastelRU page download failed (HTTP ${res.status})`);
-    }
-    return parseCastelRuMenu(await res.text());
-}
-
-export async function getCastelRuMenu(): Promise<DailyMenu> {
-    if (cache && Date.now() - cache.fetchedAt < CACHE_TTL_MS) {
-        return cache.data;
-    }
-    try {
-        const data = await fetchCastelRuMenu();
-        cache = { data, fetchedAt: Date.now() };
-        return data;
-    } catch (error) {
-        if (cache) return cache.data;
-        throw error;
-    }
-}
+import type { DailyMenu, MenuSection } from "../../../types/lacatho"; import { CACHE_TTL_MS, CROUS_VENUE_TTL_MS, msToNextParisMidnight, withCache } from "../../supa-data/utils/supabase";
+import { fetchUa, httpError } from "../../../utils/sentry"; import { frLongDate, type FrLongDate } from "../../utils/menu-date"; type Venue = { id: string; name: string; pdfUrl: string };
+const VENUES: Record<string, Venue> = { "749": { id: "castelru", name: "Le Castel'RU", pdfUrl: "https://www.crous-orleans-tours.fr/restaurant/le-castelru/" } };
+const venueOf = (code: string): Venue => VENUES[code] ?? { id: code, name: code, pdfUrl: "https://croustillant.menu" }; const API_RESTAURANT_URL = (code: string) => `https://api.croustillant.menu/v1/restaurants/${code}`;
+type Plat = { libelle: string; ordre: number }; type Categorie = { libelle: string; ordre: number; plats?: Plat[] }; type Jour = { date?: string; repas?: { type?: string; categories?: Categorie[] }[] };
+const byOrdre = <T extends { ordre: number }>(a: T, b: T) => a.ordre - b.ordre; const PARIS_DAY = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Paris", year: "numeric", month: "2-digit", day: "2-digit" });
+let parisMemo = { minute: -1, dmy: "", key: 0 }; const parisDay = (): string => { const minute = Math.floor(Date.now() / 60_000);
+  if (parisMemo.minute !== minute) { const p: Record<string, string> = {}; for (const part of PARIS_DAY.formatToParts(Date.now())) p[part.type] = part.value;
+    parisMemo = { minute, dmy: `${p.day}-${p.month}-${p.year}`, key: Number(p.year) * 10_000 + Number(p.month) * 100 + Number(p.day) }; }
+  return parisMemo.dmy; }; const dayKey = (d: FrLongDate): number => d.year * 10_000 + d.month * 100 + d.day; const parisKey = (): number => (parisDay(), parisMemo.key);
+const MENU_DATE_FMT = new Intl.DateTimeFormat("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+const formatMenuDate = (dmy: string) => { const d = frLongDate(dmy); return d ? MENU_DATE_FMT.format(new Date(Date.UTC(d.year, d.month - 1, d.day))) : ""; };
+const menuDayCurrent = (date: string): boolean => { const d = frLongDate(date); return !!d && dayKey(d) > parisKey(); };
+const sectionsOf = (day: Jour): MenuSection[] =>
+  ((day.repas?.find((r) => r.type === "midi") ?? day.repas?.[0])?.categories ?? []).toSorted(byOrdre)
+    .map((c) => ({ title: c.libelle, items: (c.plats ?? []).toSorted(byOrdre).map((p) => p.libelle).filter(Boolean) }))
+    .filter((s) => s.title && s.items.length); const toDailyMenu = (day: Jour, venue: Venue): DailyMenu => { const sections = sectionsOf(day);
+  return { date: day.date ? formatMenuDate(day.date) : "", pdfUrl: venue.pdfUrl, restaurants: sections.length ? [{ id: venue.id, name: venue.name, page: 1, sections }] : [] }; };
+async function getData<T>(url: string): Promise<T | null> { const res = await fetchUa(url, { headers: { accept: "application/json" } }); if (res.status === 404) return null;
+  if (!res.ok) throw httpError(`Échec du téléchargement CROUStillant (HTTP ${res.status})`); const text = await res.text();
+  if (text.length > 1_000_000) throw httpError(`Charge CROUStillant trop volumineuse (${text.length} caractères)`); let body: { success?: boolean; data?: T };
+  try { body = JSON.parse(text) as typeof body; } catch { throw httpError("Charge CROUStillant malformée"); }
+  return body.success === false ? null : (body.data ?? null); }
+const dayOf = async (url: string) => { const data = await getData<Jour | Jour[]>(url); return Array.isArray(data) ? (data[0] ?? null) : data && typeof data.date === "string" ? data : null; };
+async function fetchCrousMenu(code: string): Promise<DailyMenu> { const menuUrl = `${API_RESTAURANT_URL(code)}/menu`; let venue = venueOf(code);
+  try { venue = { ...venue, name: (await getCrousVenue(code)).name }; } catch (error) { if ((error as { status?: number }).status === 404) throw httpError(CROUS_ABSENT.menu, 404); }
+  const day = (await dayOf(menuUrl)) ?? (await dayOf(`${menuUrl}/${parisDay()}`)); if (!day) throw httpError(CROUS_ABSENT.menu, 404); return toDailyMenu(day, venue); }
+export const CROUS_ABSENT = { menu: "Aucun menu publié pour ce restaurant", venue: "Restaurant inconnu" } as const;
+export const crousVenueKey = (code: string) => `crous:venue:${code}`;
+export const CROUS_LEGACY_MENU_KEY = "castelru:menu"; type VenueDetail = { id: string; name: string; hours: string | null; ouvert: boolean; ispmr: boolean };
+type VenueRow = { nom: string; horaires?: string; ouvert?: boolean; ispmr?: boolean };
+export const prewarmRegisteredVenues = (): Promise<unknown>[] => Object.keys(VENUES).flatMap((code) => [getCrousVenue(code), getCrousVenueWithMenu(code)]);
+export function getCrousVenue(code: string): Promise<VenueDetail> { return withCache(crousVenueKey(code), CROUS_VENUE_TTL_MS, async () => { const row = await getData<VenueRow>(API_RESTAURANT_URL(code));
+    if (!row) throw httpError(CROUS_ABSENT.venue, 404); return { id: code, name: row.nom, hours: row.horaires ?? null, ouvert: row.ouvert === true, ispmr: row.ispmr === true }; }); }
+export const crousCacheKey = (code: string) => (code === "749" ? CROUS_LEGACY_MENU_KEY : `crous:menu:${code}`);
+export function getCrousMenu(code: string): Promise<DailyMenu> {
+  return withCache(crousCacheKey(code), Math.min(CACHE_TTL_MS, msToNextParisMidnight(Date.now())), () => fetchCrousMenu(code), async (stale) => menuDayCurrent(stale.date)); }
+export const getCastelRuMenu = (): Promise<DailyMenu> => getCrousMenu("749"); type VenueWithMenu = VenueDetail & { menu: DailyMenu };
+export const getCrousVenueWithMenu = async (code: string): Promise<VenueWithMenu> => { const [venue, menu] = await Promise.all([getCrousVenue(code), getCrousMenu(code)]); return { ...venue, menu }; };
