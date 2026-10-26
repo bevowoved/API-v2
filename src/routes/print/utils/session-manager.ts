@@ -8,7 +8,7 @@ export const dropPrintSession = (email: string, password: string): void => { pri
 export const getPrintSession = (email: string, password: string): PrintSessionManager => { const key = subKey("print", [email, password]), now = Date.now(), hit = printSessions.get(key);
   if ((hit?.expiresAt ?? 0) > now) { hit!.expiresAt = now + PRINT_REUSE_TTL_MS; return hit!.session; }
   const session = new PrintSessionManager(); capMap(printSessions.set(key, { session, expiresAt: now + PRINT_REUSE_TTL_MS }), MAX_PRINT_SESSIONS); return session; };
-export const csrfOf = (html: string, re: RegExp, label: string): string => { const token = re.exec(html)?.[1]; if (!token) throw new Error(`Jeton CSRF ${label} introuvable`); return (" " + token).slice(1); };
+export const csrfOf = (html: string, re: RegExp, label: string): string => { const token = re.exec(html)?.[1]; if (!token) throw new Error(`Jeton CSRF ${label} introuvable`); return token; };
 type PrintResponse = { statusCode: number; headers: Record<string, string | string[] | undefined>; body: string }; const printClient = (jar: CookieJar) => {
   const call = async (method: "GET" | "POST", url: string, body?: string | Readable, headers?: Record<string, string>): Promise<PrintResponse> => { const cookie = await jar.getCookieString(url);
     const response = await fetchUa(url, { method, redirect: "manual", signal: AbortSignal.timeout(60_000), ...(body === undefined ? {} : { body, duplex: "half" }),

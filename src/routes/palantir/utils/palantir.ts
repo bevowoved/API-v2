@@ -30,7 +30,7 @@ const ERR_NAME_RE = /<error-name>/, ERR_NAME_VAL_RE = /<error-name>([^<]+)/; con
 const SCHEDULE_RE = /PrimeFaces\.cw\("Schedule","[^"]+",\{id:"([^"]+)"/; const TZ_RE = /<input[^>]*\bname="([^"]*(?:fuseau|timezone)[^"]*)"/i;
 const PARTICIPANTS_RE = /<tbody id="form:onglets:apprenantsTable_data"[^>]*>([\s\S]*?)<\/tbody>/; const GROUP_PANEL_RE = /href="#(form:onglets:[^"]+)"[^>]*>\s*Groupes\s*</;
 const GROUP_TBODY_RE = /<tbody id="form:onglets:[^"]+_data"[^>]*>([\s\S]*?)<\/tbody>/; const TR_RE = /<tr[^>]*>([\s\S]*?)<\/tr>/g, TD_RE = /<td[^>]*>([\s\S]*?)<\/td>/g;
-const WS_RE = /\s+/g, UNDERSCORE_RE = /_/g, TZ_SUFFIX_RE = /([+-]\d{2})(\d{2})$/; const DATATABLE_CW = 'PrimeFaces.cw("DataTable"';
+const WS_RE = /\s+/g, NORM_WS_RE = /[_\s]+/g, TZ_SUFFIX_RE = /([+-]\d{2})(\d{2})$/; const DATATABLE_CW = 'PrimeFaces.cw("DataTable"';
 const FORM_ID = "form", VIEWSTATE_KEY = "javax.faces.ViewState", AJAX_KEY = "javax.faces.partial.ajax"; const PLANNING_PATH = "/faces/Planning.xhtml"; const STUDENT_SEP = "\n", NAME_SEP = " ", COURSE_SEP = "|";
 export function getStatus(): IndexStatus {
   return { state: data ? "ready" : "empty", phase: null, done: 0, total: 0, stale: data !== null && Date.now() >= data.expiresAt, elapsedMs: 0,
@@ -181,7 +181,7 @@ async function harvestAll(email: string, password: string, nodes: PlanningNode[]
           ctx = null; onPlanning(node, null, error); if ((error as { lostSession?: boolean }).lostSession) await Object.assign(session, { force: true }).login(email, password); }
         await sleep(pacing.delayMs); }; const steal = async (): Promise<void> => { const bucket = buckets[cursor++]; if (!bucket) return; await sequential(bucket, indexNode); return steal(); }; await steal();
     } finally { session.dispose(); } }; await Promise.all(Array.from({ length: Math.min(pacing.workers, buckets.length) }, () => run())); }
-const shortRoom = (location: string) => location.split(" - ")[0]!.replace(WS_RE, " ").trim(); const normalize = (value: string) => stripAccents(value).toLowerCase().replace(UNDERSCORE_RE, " ").replace(WS_RE, " ").trim();
+const shortRoom = (location: string) => location.split(" - ")[0]!.replace(WS_RE, " ").trim(); const normalize = (value: string) => stripAccents(value).toLowerCase().replace(NORM_WS_RE, " ").trim();
 const timeLine = /^\d{1,2}:\d{2}\s*-\s*\d{1,2}:\d{2}$/; const titleFields = (title: string) => { const lines = title.split("\n").map((line) => line.trim()).filter(Boolean), index = lines.findIndex((line) => timeLine.test(line));
   return { room: lines[0]!, teacher: index < 2 ? "" : lines[index + 1]!, course: index < 2 ? lines.join(" ") : lines[index - 2]!, type: index < 2 ? "" : lines[index - 1]! }; };
 const startMs = (lesson: PlanningLesson): number => new Date(lesson.start.replace(TZ_SUFFIX_RE, "$1:$2")).getTime();
@@ -194,8 +194,8 @@ const peopleCache = new WeakMap<IndexData, { teachers: Map<string, { names: Map<
     for (const g of index.groups)
       for (const s of g.students!)
         students.push([normalize(`${s.firstName}${NAME_SEP}${s.lastName}${NAME_SEP}${s.firstName}`), { firstName: s.firstName, lastName: s.lastName, className: g.label, groupId: `${g.menuid}:${g.rowKey}`, collesGroup: null }]);
-    students.sort((a, b) => `${a[1].className}\n${a[1].lastName}`.localeCompare(`${b[1].className}\n${b[1].lastName}`)); peopleCache.set(index, (cached = { teachers, students })); }
-  return cached; }; const scoreOf = (haystack: string, needle: string) => (haystack === needle ? 3 : haystack.startsWith(needle) ? 2 : haystack.includes(needle) ? 1 : 0);
+    students.sort((a, b) => (a[1].className + "\n" + a[1].lastName).localeCompare(b[1].className + "\n" + b[1].lastName)); peopleCache.set(index, (cached = { teachers, students })); }
+  return cached; }; const scoreOf = (h: string, n: string) => { const i = h.indexOf(n); return i < 0 ? 0 : i ? 1 : h.length === n.length ? 3 : 2; };
 const roomEntity = (label: string, detail: string, count: number): PalantirEntity => ({ kind: "room", id: label, label, detail, type: "", count });
 const groupEntity = (group: GroupRow): PalantirEntity => ({ kind: "group", id: `${group.menuid}:${group.rowKey}`, label: group.label, detail: group.planningLabel, type: group.type, count: 0 });
 const byCount = (a: PalantirEntity, b: PalantirEntity): number => b.count - a.count;

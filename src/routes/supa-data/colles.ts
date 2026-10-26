@@ -13,7 +13,7 @@ const collesIndex = new WeakMap<NormColleRow[], Map<string, Map<string, NormColl
 export const collesGroupOf = (className: string, firstName: string, lastName: string, rows: NormColleRow[]): string | null => {
   const tokens = new Set(classTokensOf(className)),
     groups = new Set((indexFor(rows).get(givenName(firstName))?.get(normalize(lastName)) ?? []).filter((row) => row.classTokens.some((token) => tokens.has(token))).map((row) => row.group_name));
-  return groups.size === 1 ? ([...groups][0] as string) : null; }; const findColleStudent = (email: string, rows: NormColleRow[], confirmedCpg: boolean) => {
+  return groups.size === 1 ? (groups.values().next().value as string) : null; }; const findColleStudent = (email: string, rows: NormColleRow[], confirmedCpg: boolean) => {
   const { firstName, lastName: surname, lastSegment } = splitEmail(email); for (let lastName = surname, suffix = ""; ; lastName = lastSegment, suffix = "-last") { if (!firstName || !lastName) return null;
     const idx = indexFor(rows), candidates: NormColleRow[] = []; if (!confirmedCpg) candidates.push(...(idx.get(firstName)?.get(lastName) ?? []));
     else for (const [nf, sub] of idx) if (matches(nf, firstName)) for (const [nl, bucket] of sub) if (matches(nl, lastName)) candidates.push(...bucket);

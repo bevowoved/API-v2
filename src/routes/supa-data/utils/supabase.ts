@@ -1,6 +1,6 @@
 import { hash } from "node:crypto"; import { crc32, gunzipSync, gzipSync } from "node:zlib"; import { PostgrestClient } from "@supabase/postgrest-js";
 import { arrayOf, capMap, captureMessage, defineRoute, errorResponseSchema, errorResponseSchemaLoose, frameworkErrorSchema,
-  parisOffset, propsSchema, respondDbError, sequential, trim, type RouteDef, type SchemaNode, varyWith } from "../../../utils/sentry";
+  parisMidnight, propsSchema, respondDbError, sequential, trim, type RouteDef, type SchemaNode, varyWith } from "../../../utils/sentry";
 export const pfpUrl = `${(process.env.SUPABASE_URL ?? "").replace(/\/+$/, "")}/storage/v1/object/public/pfp/`; const SUPABASE_TIMEOUT_MS = 15_000;
 const supaFetch: typeof fetch = (input, init) => fetch(input, { ...init, signal: AbortSignal.any([init?.signal, AbortSignal.timeout(SUPABASE_TIMEOUT_MS)].filter(Boolean) as AbortSignal[]) });
 export const withDeadline = async <T>(p: PromiseLike<T>): Promise<T> => { let timer: NodeJS.Timeout | undefined;
@@ -61,8 +61,7 @@ export const cachedRows = <T, R extends Record<string, unknown>>(table: string, 
     if (!Array.isArray(r.data)) throw Object.assign(new Error("Empty body"), { status: 502, parse: true }); return map(r.data); };
   return opts.dayAnchor ? withParisDayCache(key, fetcher) : withCache(key, opts.ttlMs!, fetcher);
 };
-export const msToNextParisMidnight = (ms: number): number => { const day = 86_400_000, off = parisOffset(ms), localMidnight = (Math.floor((ms + off) / day) + 1) * day, first = localMidnight - off;
-  return localMidnight - parisOffset(first) - ms; };
+export const msToNextParisMidnight = (ms: number): number => parisMidnight(ms, 1) - ms;
 export function withParisDayCache<T>(key: string, fetcher: () => Promise<T>): Promise<T> { return withCache(key, msToNextParisMidnight(Date.now()), fetcher); }
 const receipted = <T>(state: "HIT" | "STALE", e: Entry, data: T): Promise<T> => { const p = Promise.resolve(data); e.state = state; receipts.set(p, metaOf(state, e)); return p; };
 export const withCache = <T>(key: string, ttlMs: number, fetcher: () => Promise<T>, validate?: (stale: T, fetchedAt: number) => Promise<boolean>): Promise<T> => {

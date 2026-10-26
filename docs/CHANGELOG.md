@@ -164,9 +164,9 @@ sequenceDiagram
 | Grades page parse, per read | 788 µs, 1,073 KB | 637 µs, 413 KB | lab |
 | 20 Aurion HTML/XML parsers | baseline | 1.52x faster (`parseAgenda` 1.98x, hidden inputs 2.03x) | lab |
 | Hostile nested-table input to the parser | 1,224 ms | 1.4 ms | lab |
-| Palantir: one teacher's lessons, group lookup, group lessons & people search | 29.3 ms lessons; 318 µs group; 3.15 µs group lessons; 7.41 ms people | 3 µs lessons; 9.6 µs group (33x faster); 1.15 µs group lessons (2.7x); 0.48 ms people (15.4x faster) | lab |
+| Palantir: one teacher's lessons, group lookup, group lessons & people search | 29.3 ms lessons; 318 µs group; 3.15 µs group lessons; 7.41 ms people | 3 µs lessons; 9.6 µs group (33x faster); 1.15 µs group lessons (2.7x); 0.48 ms people (15.4x faster); 1.66x `scoreOf`, 1.34x `normalize` (`NORM_WS_RE`), 1.13x student sort | lab |
 | CROUS date memo, `/json` ETag, gzip header & flight key | `Intl` per call; 64.3 ns ETag; regex gzip | 30x date memo; 14.6 ns ETag (4.4x); 22x to 42x gzip; 12x to 14x flight key | lab |
-| Sentry scrubber, Paris offset, Print parser & login code check | baseline | 2.91x scrubber, 1,509x `parisOffset`, 1.93x Print parser, 17x `loginCode` check | lab |
+| Sentry scrubber, Paris offset, Print parser & login code check | baseline | 2.91x scrubber (1.89x `secretsOf`), 1,509x `parisOffset`, 1.11x integer `parisMidnight` (delegated from `msToNextParisMidnight`), 2.50x `parseAmount` (`AMT_RES`), 1.17x `csrfOf`, 17x `loginCode` check | lab |
 | Menu PDF, 8 MiB download | 77.6 ms | 52.3 ms (single-allocation `Buffer.allocUnsafeSlow`, 0 double-copy) | lab |
 
 ## Load on Aurion and other sources
@@ -483,13 +483,14 @@ sequenceDiagram
 
 | What | Before | After | Measured |
 |---|---|---|---|
-| Source lines | 7,685 in 65 files | 1,676 in 38 `src/` files (-78.2%; 1,856 total with `scripts/*.ts` in 46 files); 0 lines over width 228 (max 228) | count |
+| Source lines | 7,685 in 65 files | 1,676 on `main` (`9d9f4638`) / **1,672 on `next`** in 38 `src/` files (-78.2%; 1,852 total with `scripts/*.ts` in 46 files); 0 lines over width 228 (max 228) | count |
 | Source lines, reformatted at width 120 | 7,685 | 5,381 (`bun fmt` at width 228) | count |
 | Palantir code | 1,531 lines, 8 files | 298 lines, 2 files, same answers | count |
 | Palantir routes | 202 lines | 62 | count |
 | Documents module | 541 lines | 146 | count |
 | Session manager and Aurion routes | 572 lines | 328 (369 with grades, absences & planning; includes consolidated routes & flow engine) | count |
-| Cache, CROUS and Supabase readers | 718 lines | 209 (227 with CROUS routes) | count |
+| Cache, CROUS and Supabase readers | 718 lines | 208 (`next`) / 209 (`main`) (226 / 227 with CROUS routes; `msToNextParisMidnight` delegates to `parisMidnight`) | count |
+| Print module (`print.ts`, `session-manager.ts`, `jobs-upload/route.ts`) | 623 lines, 7 files | 104 lines (`next`) / 107 lines (`main`), 3 files | count |
 | Aurion page readers | 421 lines | 117 | count |
 | Comments and blank lines | 838 | 0 comments | count |
 | Type errors (documents parser) | 13 | 0 | count |
@@ -500,6 +501,18 @@ sequenceDiagram
 | Node & Bun checks in CI | none | CI: Bun `tsc --noEmit --pretty false`, `<= 228`-col & 0-comment linter, esbuild 0-error/0-warning bundle gate, Node 22.13 and 25 (tests), Node 26 (100% V8 L/B/F coverage and image `/healthz` + `/json` gate) | test |
 | What CI deploys | `fly deploy --remote-only`: Fly rebuilds the image, untested | the image the gate tested, pushed to `registry.fly.io` with zstd and deployed with `--image`; the job fails if its layer digests differ from the tested image. Layers cached in GitHub's cache, written only from `main` | test (local registry: digests match, a different image fails) |
 | Node 26-only `Map.getOrInsertComputed` | 6 call sites (Node 22 and 24 crashed at start) | `get ?? set` at the same sites, -3 lines, no helper; same map contents, session tokens open across versions | test |
+
+## Diff summary: Upstream (`fa143a9c`) vs. PR milestones (`fc99a0bc`, `995a3c5c`, `main` `9d9f4638`) vs. `next`
+
+| Dimension | Upstream (`fa143a9c`) | Earlier PR (`fc99a0bc`) | Prior PR (`995a3c5c`) | PR `main` (`9d9f4638`) | `next` (`refs/heads/next`) | Behavior / Consolidation / Delegation Evidence |
+|---|---:|---:|---:|---:|---:|---|
+| `src/` files & LOC | 65 files / 7,685 LOC | 38 files / 5,883 LOC (-23.4%) | 38 files / 3,823 LOC (-50.3%) | 38 files / 1,676 LOC (-78.19%) | **38 files / 1,672 LOC (-78.24%)** | `git diff --numstat fa143a9c..next -- src`: `+1,663 / -7,676` (`-6,013` net LOC); `-2,151` LOC vs `995a3c5c`; `-4` LOC vs `9d9f4638` across 7 files |
+| `scripts/*.ts` files & LOC | 9 files / 1,423 LOC | 8 files / 349 LOC | 8 files / 349 LOC (-75.5%) | 8 files / 180 LOC (-87.35%) | **8 files / 180 LOC (-87.35%)** | `scripts/palantir-daemon.ts` (236 LOC) moved to `src/palantir-daemon.ts` (29 LOC); 8 CLI scripts share `scripts/_kit.ts` (52 LOC) |
+| Total `.ts` files & LOC | 74 files / 9,108 LOC | 46 files / 6,232 LOC | 46 files / 4,172 LOC (-54.2%) | 46 files / 1,856 LOC (-79.62%) | **46 files / 1,852 LOC (-79.67%)** | `0` comments, `0` lines `> 228` columns across all 46 `.ts` files |
+| Merging (65 $\rightarrow$ 38 `src/` files) | 34 separate route/util/type files | Consolidated into 38 `src/` modules | Same 38 `src/` modules | Same 38 `src/` modules | **Same 38 `src/` modules + merged regexes** | Merged 7 Aurion route files into `aurion/index.ts` (128 LOC), 6 Palantir routes into `palantir/route.ts` (62 LOC), 6 Palantir util/type files into `palantir/utils/palantir.ts` (236 LOC), 4 Print routes into `print/utils/print.ts` (64 LOC), 3 BadJunia files into `badjunia/route.ts` (27 LOC), `session-cache.ts` into `session-manager.ts` (200 LOC), `download-token.ts` into `documents.ts` (116 LOC), and `UNDERSCORE_RE`+`WS_RE` into `NORM_WS_RE` |
+| Delegating | Duplicated route schemas, caches, date math, and JSF walks | Shared helpers introduced | Shared helpers compacted | Shared helpers folded to `<= 228` cols | **Direct native delegation (`-2` LOC in `supabase.ts`)** | `msToNextParisMidnight(ms)` in `supabase.ts` (100 LOC) delegates to `parisMidnight(ms, 1) - ms` in `sentry.ts` (90 LOC); `castelru/route.ts` (5 LOC) & `lacatho/menu/route.ts` (5 LOC) delegate to `crous/menu/route.ts` (13 LOC); `associations.ts` (11 LOC), `messages.ts` (5 LOC), `tools.ts` (5 LOC), `updates.ts` (14 LOC) delegate to `supaGetRoute`/`cachedRows`; `absences.ts` (6 LOC) & `grades.ts` (5 LOC) delegate to `session-manager.ts` & `page-parser.ts` (117 LOC); 3 Print routes delegate to `printJsonRoute` |
+| Native hot-path changes (`9d9f4638` $\rightarrow$ `next`) | Baseline | Baseline | Baseline | `WeakMap` `peopleCache` (15.4x) & `groupLessons` (2.7x), `Buffer.allocUnsafeSlow`, 2 KiB upload slice, `loginCode` (17x) | **+10 native-only hot-path wins across 7 files** | `print.ts` (64 LOC): precompiled `AMT_RES` (2.50x `parseAmount`) + stride-2 `listJobs` loop (-7.7%); `print/session-manager.ts` (23 LOC): direct `token` return (-14.4% `csrfOf`); `palantir.ts` (236 LOC): `NORM_WS_RE` (-25.2% `normalize`), single `indexOf` `scoreOf` (-39.8%, -16.6% `search`), `+` concat sort (-11.7% `peopleOf`); `menu-pdf-parser.ts` (45 LOC): pre-mapped `ys` (-1.7%); `sentry.ts` (90 LOC): tuple `secretsOf` (-47.1%) + integer `parisMidnight` (-9.8%); `colles.ts` (33 LOC): `groups.values().next().value` |
+| External behavior & test gate | 0 tests, 60 open edge-case defects | 753 tests, 60 open pins | 763 tests (752 LOC), 0 open pins, 100% V8 L/B/F | 763 tests (752 LOC), 0 open pins, 100% V8 L/B/F | **763 tests (752 LOC), 0 open pins, 100% V8 L/B/F** | `0` external API/schema/response changes vs `995a3c5c` & `9d9f4638`; all 27 original routes + 4 operational routes byte-identical |
 
 ## Not yet proven
 

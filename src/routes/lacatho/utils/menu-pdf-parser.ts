@@ -23,8 +23,8 @@ function partitionByMidpoint(dishes: Row[], headers: Header[]): Row[][] { const 
   const rec = (start: number, gi: number, cost: number): void => { if (gi === k - 1) { const total = cost + bandCost(start, n - 1, gi); if (total < bestCost) { bestCost = total; best = cuts.slice(); } return; }
     for (let c = start + 1; c <= n - (k - 1 - gi); c++) { cuts.push(c); rec(c, gi + 1, cost + bandCost(start, c - 1, gi)); cuts.pop(); } }; rec(0, 0, 0);
   return headers.map((_, i) => dishes.slice(i ? (best[i - 1] as number) : 0, i < k - 1 ? (best[i] as number) : n)); }
-const partitionByHeaderAbove = (dishes: Row[], headers: Header[]): Row[][] => { const groups: Row[][] = headers.map(() => []);
-  for (const d of dishes) (groups[Math.max(0, headers.findLastIndex((h) => h.y > d.y))] as Row[]).push(d); return groups; };
+const partitionByHeaderAbove = (dishes: Row[], headers: Header[]): Row[][] => { const ys = headers.map((h) => h.y), groups: Row[][] = headers.map(() => []);
+  for (const d of dishes) (groups[Math.max(0, ys.findLastIndex((y) => y > d.y))] as Row[]).push(d); return groups; };
 export function partitionCostOk(n: number, k: number, budget: number): boolean { if (n <= k || k <= 1) return true; let c = 1; for (let i = 1, r = Math.min(k - 1, n - k); i <= r && c <= budget; i++) c = (c * (n - i)) / i;
   return c <= budget; }
 const PARTITION_BUDGET = 200_000; function parsePage(rows: Row[], restaurantName: string): MenuSection[] { const headers: Header[] = [], dishes: Row[] = [], target = norm(restaurantName), kept: Row[] = [];

@@ -10,7 +10,7 @@ const redact = (s: string, secrets: readonly string[]): string => { for (const s
 const DROP_KEYS = new Set(["request", "headers", "cookies", "query_string"]); const scrubValue = (v: unknown, secrets: readonly string[]): unknown => { if (typeof v === "string") return redact(v, secrets);
   if (!v || typeof v !== "object") return v; if (Array.isArray(v)) return v.map((x) => scrubValue(x, secrets));
   return Object.fromEntries(Object.entries(v).filter(([k]) => !DROP_KEYS.has(k)).map(([k, x]) => [k, SECRET_KEY.test(k) ? "‹redacted›" : scrubValue(x, secrets)])); };
-const secretsOf = (body: unknown): string[] => (!body || typeof body !== "object" ? [] : ["email", "password"].map((k) => (body as Record<string, unknown>)[k]).filter((v): v is string => typeof v === "string" && v.length >= 3));
+const secretsOf = (b: unknown): string[] => (!b || typeof b !== "object" ? [] : [(b as { email?: unknown }).email, (b as { password?: unknown }).password].filter((v): v is string => typeof v === "string" && v.length >= 3));
 if (Sentry) { Sentry.init({
     dsn: process.env.SENTRY_DSN, dataCollection: {
       userInfo: false, cookies: false, httpHeaders: false, httpBodies: [], urlQueryParams: false,
@@ -40,8 +40,8 @@ export const UPSTREAM_USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv
 const PARIS_OFFSET = new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Paris", timeZoneName: "longOffset" });
 export const parisOffset = (at: number): number => { const slot = Math.floor(at / 1_800_000); if (slot === PM.slot) return PM.off; const m = GMT_RE.exec(PARIS_OFFSET.format(at))!;
   return ((PM.slot = slot), (PM.off = (Number(m[2]) * 60 + Number(m[3])) * 60_000));
-};export const parisMidnight = (from: number, dayOffset: number): number => { const offset = parisOffset(from), wall = new Date(from + offset),
-  midnight = Date.UTC(wall.getUTCFullYear(), wall.getUTCMonth(), wall.getUTCDate() + dayOffset); return midnight - parisOffset(midnight - offset); };
+};export const parisMidnight = (from: number, dayOffset: number): number => { const offset = parisOffset(from), midnight = (Math.floor((from + offset) / 86_400_000) + dayOffset) * 86_400_000;
+  return midnight - parisOffset(midnight - offset); };
 export function fetchUa(url: string, init: RequestInit = {}) { const headers = new Headers(init.headers); headers.set("User-Agent", UPSTREAM_USER_AGENT);
   return fetch(url, { signal: AbortSignal.timeout(15_000), ...init, headers }); }export const httpError = (message: string, status = 502) => Object.assign(new Error(message), { status });
 const errorBody = { type: "object", properties: { success: { type: "boolean" }, error: { type: "string" } } };

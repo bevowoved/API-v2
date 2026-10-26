@@ -6,28 +6,25 @@ type PrintFolder = "WAITING" | "PRINTED"; type PrintJob = { id: string; name: st
 const DELIM_RE = /(<div class="job"[^>]*>)/, TITLE_RE = /<div class="job-title">([\s\S]*?)<\/div>/, OVERVIEW_RE = /<div class="job-basic-overview">([\s\S]*?)<\/div>/,
   ID_RE = /data-job-id="(\d+)"/, ID_ALL_RE = /data-job-id="(\d+)"/g, MOBILE_RE = /^Mobile print:\s*/, LIVE_RE = /\/login\b/,
   DELETE_CSRF_RE = /id="last-jobs-delete"[^>]*data-csrf-token="([^"]+)"/, UPLOAD_CSRF_RE = /name="csrfToken"[^>]*value="([^"]+)"/,
+  AMT_RES: Record<string, RegExp> = { "personal-balance": /<span class="personal-balance">([^<]*)<\/span>/, "virtual-balance": /<span class="virtual-balance">([^<]*)<\/span>/ },
   AMT_STRIP_RE = /[\s\u20AC]|eur/gi, AMT_NUM_RE = /^-?\d+(?:\.\d+)?$/, AMT_DOT_GROUP_RE = /\.(?=\d{3}\b)/g, JOBLIST_SENTINEL = /job-list|data-job-id|Aucun travail/i;
 export const FILE_TOO_LARGE = "Fichier trop volumineux";
 export const successOnly = (): SchemaNode => ({ type: "object", properties: { success: { type: "boolean" } }, required: ["success"] }); const PRINT_DATA_TTL_MS = 15_000;
 export const printJobsKey = (email: string, password: string, folder: PrintFolder): string => `print:jobs:${subKey("print-data", [email, password])}:${folder}`;
 export const printBalanceKey = (email: string, password: string): string => `print:balance:${subKey("print-data", [email, password])}`;
 export const dropPrintCaches = (...keys: string[]): void => { for (const key of keys) dropCache(key); };
-
 function framedJob(file: Readable, filename: string, mimeType: string, bw: boolean, duplex: boolean) {
   const boundary = `----mauria${randomUUID().replace(/-/g, "")}`, field = (name: string, value: string) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`;
   const head = Buffer.from(`${field("bw", String(bw))}${field("duplex", String(duplex))}--${boundary}\r\nContent-Disposition: form-data; name="importFile"; ` +
     `filename="${filename.replace(/["\r\n]/g, "_")}"\r\nContent-Type: ${mimeType}\r\n\r\n`), tail = Buffer.from(`\r\n--${boundary}--\r\n`);
   const body = Readable.from((async function* () { yield head; yield* file; if ((file as Readable & { truncated?: boolean }).truncated) throw Object.assign(new Error(FILE_TOO_LARGE), { truncated: true }); yield tail; })());
   return { body, contentType: `multipart/form-data; boundary=${boundary}` }; }
-
-const parseAmount = (html: string, className: string): number => { const raw = (new RegExp(`<span class="${className}">([^<]*)</span>`).exec(html)?.[1] ?? "").replace(AMT_STRIP_RE, "").replace(AMT_DOT_GROUP_RE, "");
-  const cleaned = raw.replace(",", "."); return AMT_NUM_RE.test(cleaned) ? parseFloat(cleaned) : 0; }; const assertPrintLive = (response: { statusCode: number; headers?: Record<string, unknown> }, retryable = true): void => {
+const parseAmount = (html: string, className: string): number => { const cleaned = (AMT_RES[className]!.exec(html)?.[1] ?? "").replace(AMT_STRIP_RE, "").replace(AMT_DOT_GROUP_RE, "").replace(",", ".");
+  return AMT_NUM_RE.test(cleaned) ? parseFloat(cleaned) : 0; }; const assertPrintLive = (response: { statusCode: number; headers?: Record<string, unknown> }, retryable = true): void => {
   if (LIVE_RE.test(String(response.headers?.location))) throw Object.assign(new Error("Session impression perdue"), { lostSession: true, retryable, status: 502 }); };
-
 export async function withPrintSession<T>(email: string, password: string, run: (client: PrintClient) => Promise<T>): Promise<T> { const session = getPrintSession(email, password); await session.login(email, password);
   try { return await run(new PrintClient(session)); } catch (error) { const lost = error as { lostSession?: boolean; retryable?: boolean } | null; if (lost?.lostSession !== true) throw error; dropPrintSession(email, password);
     if (!lost.retryable) throw error; const fresh = getPrintSession(email, password); await fresh.login(email, password); return run(new PrintClient(fresh)); } }
-
 export class PrintClient { constructor(private session: PrintSessionManager) {}
   private async getPage(path: string): Promise<string> { const response = await this.session.client.get(`${PRINT_BASE}${path}`); assertPrintLive(response);
     if (response.statusCode !== 200) throw new Error(`Page ${path} inaccessible (${response.statusCode})`); return response.body; }
@@ -38,7 +35,7 @@ export class PrintClient { constructor(private session: PrintSessionManager) {}
       const title = TITLE_RE.exec(block)?.[1] ?? "", overview = OVERVIEW_RE.exec(block)?.[1] ?? "", parts = decodeEntities(overview, ENTITY_RULES).trim().split(" | ");
       if (overview.trim() && parts.length < 2) throw httpError("Réponse du service d'impression invalide (séparateur de titre manquant)", 502);
       jobs.push({ id, name: decodeEntities(title, ENTITY_RULES).trim().replace(MOBILE_RE, ""), date: parts[0]!.trim(), owner: parts.slice(1).join(" | ").trim() }); };
-    const parts = html.split(DELIM_RE), blocks = parts.filter((_, i) => i % 2).map((head, i) => `${head}${parts[i * 2 + 2]!}`); for (const block of blocks) push(ID_RE.exec(block)?.[1], block);
+    const parts = html.split(DELIM_RE); for (let i = 1; i < parts.length; i += 2) { const b = parts[i]! + parts[i + 1]!; push(ID_RE.exec(b)?.[1], b); }
     if (!jobs.length && !JOBLIST_SENTINEL.test(html)) throw httpError("Réponse du service d'impression invalide (liste des travaux introuvable)", 502);
     if (!jobs.length) { ID_ALL_RE.lastIndex = 0; for (let cur = ID_ALL_RE.exec(html), nxt = cur && ID_ALL_RE.exec(html); cur; cur = nxt, nxt = cur && ID_ALL_RE.exec(html))
       push(cur[1], html.slice(cur.index + cur[0].length, nxt?.index)); }
